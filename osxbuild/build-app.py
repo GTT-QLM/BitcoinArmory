@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 """Build Armory as a Mac OS X Application."""
+from __future__ import print_function
 
 import os
 from os import path
@@ -18,7 +19,7 @@ from subprocess import Popen, PIPE
 from tempfile import mkstemp
 
 # Set some constants up front
-minOSXVer     = '10.8'
+minOSXVer     = '10.9'
 pythonVer     = '2.7.15' # NB: ArmoryMac.pro must also be kept up to date!!!
 pyMajorVer    = '2.7'
 setToolVer    = '40.1.0'
@@ -65,20 +66,26 @@ CONFIGFLAGS = '--prefix=\"%s\" --with-macosx-version-min=%s PATH=\"$PATH:%s\" LI
 # alone since it'll be gone soon anyway.
 QTBUILTFLAG = path.join(WORKUNPACKDIR, 'qt/qt_install_success.txt')
 
-# If no arguments specified, then do the minimal amount of work necessary
-# Assume that only one flag is specified.  These should be
+# If no arguments specified, then do the minimal amount of work necessary.
+# Some flags are incompatible with others. (TODO: Sort it out.)
+# In addition, "rebuildapp" works only after a full build, and completely
+# rebuilds Armory.
 parser = optparse.OptionParser(usage="%prog [options]\n")
 parser.add_option('--fromscratch',  dest='fromscratch', default=False, action='store_true', help='Remove all prev-downloaded: redownload and rebuild all')
 parser.add_option('--rebuildall',   dest='rebuildall',  default=False, action='store_true', help='Remove all prev-built; no redownload, only rebuild')
 parser.add_option('--rebuildapp',   dest='rebuildapp',  default=False, action='store_true', help='Completely rebuild (autogen/configure/make) Armory')
-parser.add_option('--compapponly',  dest='compapponly', default=False, action='store_true', help='Recompile Armory, not the 3rd party code')
+parser.add_option('--compapponly',  dest='compapponly', default=False, action='store_true', help='Recompile Armory')
 parser.add_option('--armoryd',      dest='armoryd',     default=False, action='store_true', help='Add files to allow armoryd to run')
+parser.add_option('--verbose',      dest='verboseOut',  default=False, action='store_true', help='Verbose output in Makefile output')
 (CLIOPTS, CLIARGS) = parser.parse_args()
+
+if CLIOPTS.verboseOut:
+   MAKEFLAGS += ' V=1'
 
 ########################################################
 # Write the string to both console and log file
 def logprint(s):
-   print s
+   print(s)
    with open(LOGFILE,'a') as f:
       f.write(s if s.endswith('\n') else s+'\n')
 
@@ -106,7 +113,7 @@ for var in ['PATH','DYLD_FRAMEWORK_PATH', 'QTDIR', 'QMAKESPEC']:
 # Build requires a "brew"ed OpenSSL. Need to get the header location.
 opensslPath = subprocess.check_output(["brew", "--prefix", "openssl"]).rstrip('\n')
 if opensslPath.startswith("Error"):
-   print 'ERROR: You must use brew to install OpenSSL. Exiting build process.'
+   print('ERROR: You must use brew to install OpenSSL. Exiting build process.')
    sys.exit()
 
 ########################################################
@@ -684,12 +691,12 @@ def make_resources():
 ########################################################
 def cleanup_app():
    "Try to remove as much unnecessary junk as possible."
-   print "Removing Python test-suite."
+   print("Removing Python test-suite.")
    testdir = path.join(PYFRAMEBASE, "lib/python%s/test" % pyMajorVer)
    if path.exists(testdir):
       removetree(testdir)
 
-   print "Removing .pyo and .pyc files."
+   print("Removing .pyo and .pyc files.")
    remove_python_files(ARMORYCODEBASE)
 
 ########################################################
@@ -704,7 +711,7 @@ def getVersionStr():
          if line.startswith('BTCARMORY_VERSION'):
             vstr = line[line.index('(')+1:line.index(')')]
             vquad = tuple([int(v) for v in vstr.replace(' ','').split(',')])
-            print vquad, len(vquad)
+            print(vquad, len(vquad))
             vstr = '%d.%02d' % vquad[:2]
             if (vquad[2] > 0 or vquad[3] > 0):
                vstr += '.%d' % vquad[2]

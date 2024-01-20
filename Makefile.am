@@ -1,5 +1,7 @@
-# Makefile for BitcoinArmory bitcoin wallet
+# Makefile for Bitcoin Armory - Root Makefile
 SUBDIRS = cppForSwig
+bin_PROGRAMS =
+noinst_PROGRAMS =
 
 EXTRA_DIST = *.py *.md LICENSE LICENSE-ATI LICENSE-MIT \
 	nginx_example.conf imgList.xml autogen.sh \
@@ -7,29 +9,17 @@ EXTRA_DIST = *.py *.md LICENSE LICENSE-ATI LICENSE-MIT \
 	img/* lang/* dpkgfiles/* \
 	windowsbuild/* linuxbuild/* osxbuild/*
 
-ACLOCAL_AMFLAGS = -I m4
-
-lrelease:
-if HAVE_GUI
-	lrelease lang/*.ts
-endif
-
-qrc_img_resources.py: imgList.xml
-if HAVE_GUI
-	pyrcc4 -o qrc_img_resources.py imgList.xml
-endif
+ACLOCAL_AMFLAGS = -I build-aux/m4
 
 copy-script:
 	cp cppForSwig/ArmoryDB ./ArmoryDB
+	cp cppForSwig/BIP150KeyManager ./BIP150KeyManager
+	cp cppForSwig/CppBridge ./CppBridge
 
-# SWIG code and requirements.
-if HAVE_GUI
-	cp cppForSwig/CppBlockUtils.py ./CppBlockUtils.py
-if BUILD_DARWIN
-	cp cppForSwig/.libs/libCppBlockUtils.dylib ./_CppBlockUtils.so
-else
-	cp cppForSwig/.libs/libCppBlockUtils.so ./_CppBlockUtils.so
-endif
+# protobuf formas for python
+if BUILD_CLIENT
+	protoc --python_out=$(srcdir)/armoryengine --proto_path=$(srcdir)/cppForSwig/protobuf $(srcdir)/cppForSwig/protobuf/BridgeProto.proto
+#TODO: build c20p1305 CFFI python lib
 endif
 
 .PHONY: copy-script lrelease qrc_img_resources.py
@@ -40,33 +30,37 @@ all-local: copy-script lrelease qrc_img_resources.py
 #target to clean up pre autotools installation left overs
 uninstall-old:
 	rm -f $(DESTDIR)$(prefix)/bin/ArmoryDB
+	rm -f $(DESTDIR)$(prefix)/bin/BIP150KeyManager
 
 install-exec-hook: uninstall-old
-if HAVE_GUI
+if BUILD_CLIENT
+if BUILD_GUI
 	mkdir -p $(DESTDIR)$(prefix)/lib/armory/ui
+endif
 	mkdir -p $(DESTDIR)$(prefix)/lib/armory/armoryengine
-	mkdir -p $(DESTDIR)$(prefix)/lib/armory/lang
 	mkdir -p $(DESTDIR)$(prefix)/share/applications
 	cp *.py *.so README.md $(DESTDIR)$(prefix)/lib/armory
-	cp -r ui/* $(DESTDIR)$(prefix)/lib/armory/ui
 	cp -r armoryengine/* $(DESTDIR)$(prefix)/lib/armory/armoryengine
+if BUILD_GUI
+	mkdir -p $(DESTDIR)$(prefix)/lib/armory/lang
+	cp -r ui/* $(DESTDIR)$(prefix)/lib/armory/ui
 	cp lang/*.qm $(DESTDIR)$(prefix)/lib/armory/lang
+endif
 endif
 
 	mkdir -p $(DESTDIR)$(prefix)/bin
 # Sometimes, uninstall-old deletes a valid ArmoryDB. Copy again to be safe.
 	cp ArmoryDB $(DESTDIR)$(prefix)/bin
+	cp BIP150KeyManager $(DESTDIR)$(prefix)/bin
 
 # No need to install test binaries.
 if BUILD_TESTS
-	rm -f $(DESTDIR)$(prefix)/bin/ContainerTests
-	rm -f $(DESTDIR)$(prefix)/bin/CppBlockUtilsTests
-	rm -f $(DESTDIR)$(prefix)/bin/DB1kIterTest
+	rm -f $(DESTDIR)$(prefix)/bin/*Tests
 endif
 
 # Skip Linux-specific steps on OSX.
 if ! BUILD_DARWIN
-if HAVE_GUI
+if BUILD_CLIENT
 	rsync -rupE --exclude="img/.DS_Store" img $(DESTDIR)$(prefix)/share/armory/
 	sed "s: /usr: $(prefix):g" < dpkgfiles/armory > $(DESTDIR)$(prefix)/bin/armory
 	chmod +x $(DESTDIR)$(prefix)/bin/armory
@@ -81,6 +75,10 @@ uninstall-hook: uninstall-old
 
 clean-local:
 	rm -f ArmoryDB
+	rm -f BIP150KeyManager
+	rm -f lib/*
+if BUILD_CLIENT
 	rm -f CppBlockUtils.py
 	rm -f _CppBlockUtils.so
 	rm -f CppBlockUtils.pyc
+endif

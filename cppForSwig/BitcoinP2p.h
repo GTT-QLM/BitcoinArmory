@@ -23,8 +23,6 @@
 #include "TxClasses.h"
 #include "SocketObject.h"
 
-using namespace std;
-
 //reconnect constants
 #define RECONNECT_INCREMENT_MS 500
 
@@ -70,15 +68,13 @@ enum InvType
    Inv_Msg_Tx,
    Inv_Msg_Block,
    Inv_Msg_Filtered_Block,
-   Inv_Terminate,
    Inv_Witness = 1 << 30,
    Inv_Msg_Witness_Tx = Inv_Msg_Tx | Inv_Witness,
    Inv_Msg_Witness_Block = Inv_Msg_Block | Inv_Witness
 };
 
 int get_varint(uint64_t& val, uint8_t* ptr, uint32_t size);
-int make_varint(const uint64_t& value, vector<uint8_t>& varint);
-int get_varint_len(const int64_t& value);
+int make_varint(const uint64_t& value, std::vector<uint8_t>& varint);
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -108,39 +104,39 @@ struct BitcoinNetAddr
 class BitcoinP2P_Exception
 {
 private:
-   const string error_;
+   const std::string error_;
 
 public:
-   BitcoinP2P_Exception(const string& e) : error_(e)
+   BitcoinP2P_Exception(const std::string& e) : error_(e)
    {}
 
-   const string& what(void) const { return error_; }
+   const std::string& what(void) const { return error_; }
 };
 
 struct BitcoinMessageDeserError : public BitcoinP2P_Exception
 {
    const size_t offset_;
 
-   BitcoinMessageDeserError(const string& e, size_t off) : 
+   BitcoinMessageDeserError(const std::string& e, size_t off) :
       BitcoinP2P_Exception(e), offset_(off)
    {}
 };
 
 struct BitcoinMessageUnknown : public BitcoinP2P_Exception
 {
-   BitcoinMessageUnknown(const string& e) : BitcoinP2P_Exception(e)
+   BitcoinMessageUnknown(const std::string& e) : BitcoinP2P_Exception(e)
    {}
 };
 
 struct PayloadDeserError : public BitcoinP2P_Exception
 {
-   PayloadDeserError(const string& e) : BitcoinP2P_Exception(e)
+   PayloadDeserError(const std::string& e) : BitcoinP2P_Exception(e)
    {}
 };
 
 struct GetDataException : public BitcoinP2P_Exception
 {
-   GetDataException(const string& e) : BitcoinP2P_Exception(e)
+   GetDataException(const std::string& e) : BitcoinP2P_Exception(e)
    {}
 };
 
@@ -149,31 +145,33 @@ class Payload
 {
 protected:
    virtual size_t serialize_inner(uint8_t*) const = 0;
-   static vector<size_t> processPacket(
-      vector<uint8_t>& data, uint32_t magic_word);
+   static std::vector<size_t> processPacket(
+      std::vector<uint8_t>& data, uint32_t magic_word);
 
 public:
    struct DeserializedPayloads
    {
-      vector<uint8_t> data_;
-      vector<unique_ptr<Payload>> payloads_;
+      std::vector<uint8_t> data_;
+      std::vector<std::unique_ptr<Payload>> payloads_;
       size_t spillOffset_ = SIZE_MAX;
       int iterCount_ = 0;
    };
 
 public:
-   static shared_ptr<DeserializedPayloads> deserialize(
-      vector<uint8_t>& data, uint32_t magic_word, 
-      shared_ptr<DeserializedPayloads> prevPacket);
+   static std::shared_ptr<DeserializedPayloads> deserialize(
+      std::vector<uint8_t>& data, uint32_t magic_word,
+      std::shared_ptr<DeserializedPayloads> prevPacket);
 
 public:
    virtual ~Payload() 
    {}
 
-   virtual vector<uint8_t> serialize(uint32_t magic_word) const;
+   virtual std::vector<uint8_t> serialize(uint32_t magic_word) const;
+   size_t serialize(uint32_t magic_word, void* ptr, size_t buffer_len) const;
+   size_t getSerializedSize(void) const;
 
    virtual PayloadType type(void) const = 0;
-   virtual string typeStr(void) const = 0;
+   virtual std::string typeStr(void) const = 0;
 
    virtual void deserialize(uint8_t* dataptr, size_t len) = 0;
 };
@@ -182,7 +180,7 @@ public:
 struct Payload_Unknown : public Payload
 {
 private:
-   vector<uint8_t> data_;
+   std::vector<uint8_t> data_;
 
 private:
    size_t serialize_inner(uint8_t*) const;
@@ -199,7 +197,7 @@ public:
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType type(void) const { return Payload_unknown; }
-   string typeStr(void) const { return "unknown"; }	
+   std::string typeStr(void) const { return "unknown"; }
 };
 
 ////
@@ -220,7 +218,7 @@ public:
    };
 
    version_header vheader_;
-   string userAgent_;
+   std::string userAgent_;
    uint32_t startHeight_;
 
    Payload_Version() {}
@@ -232,7 +230,7 @@ public:
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType type(void) const { return Payload_version; }
-   string typeStr(void) const { return "version"; }
+   std::string typeStr(void) const { return "version"; }
 
    void setVersionHeaderIPv4(uint32_t version, uint64_t services,
       int64_t timestamp,
@@ -248,11 +246,11 @@ private:
 
 public:
    Payload_Verack() {}
-   Payload_Verack(vector<uint8_t>* dataptr)
+   Payload_Verack(std::vector<uint8_t>*)
    {}
 
    PayloadType type(void) const { return Payload_verack; }
-   string typeStr(void) const { return "verack"; }
+   std::string typeStr(void) const { return "verack"; }
 
    void deserialize(uint8_t*, size_t) {}
 };
@@ -277,7 +275,7 @@ public:
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType type(void) const { return Payload_ping; }
-   string typeStr(void) const { return "ping"; }
+   std::string typeStr(void) const { return "ping"; }
 };
 
 ////
@@ -300,7 +298,7 @@ public:
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType type(void) const { return Payload_pong; }
-   string typeStr(void) const { return "pong"; }
+   std::string typeStr(void) const { return "pong"; }
 };
 
 ////
@@ -316,7 +314,7 @@ private:
    size_t serialize_inner(uint8_t*) const;
 
 public:
-   vector<InvEntry> invVector_;
+   std::vector<InvEntry> invVector_;
 
 public:
    Payload_Inv() {}
@@ -329,9 +327,9 @@ public:
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType type(void) const { return Payload_inv; }
-   string typeStr(void) const { return "inv"; }
+   std::string typeStr(void) const { return "inv"; }
 
-   void setInvVector(vector<InvEntry> invvec)
+   void setInvVector(std::vector<InvEntry> invvec)
    {
       invVector_ = move(invvec);
    }
@@ -341,7 +339,7 @@ public:
 struct Payload_GetData : public Payload
 {
 private:
-   vector<InvEntry> invVector_;
+   std::vector<InvEntry> invVector_;
 
 private:
    size_t serialize_inner(uint8_t*) const;
@@ -359,12 +357,17 @@ public:
       invVector_.push_back(inventry);
    }
 
+   Payload_GetData(std::vector<InvEntry>&& invVec)
+   {
+      invVector_ = invVec;
+   }
+
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType type(void) const { return Payload_getdata; }
-   string typeStr(void) const { return "getdata"; }
+   std::string typeStr(void) const { return "getdata"; }
 
-   const vector<InvEntry>& getInvVector(void) const
+   const std::vector<InvEntry>& getInvVector(void) const
    {
       return invVector_;
    }
@@ -374,7 +377,7 @@ public:
 struct Payload_Tx : public Payload
 {
 private:
-   vector<uint8_t> rawTx_;
+   std::vector<uint8_t> rawTx_;
    BinaryData txHash_;
 
 private:
@@ -391,7 +394,7 @@ public:
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType type(void) const { return Payload_tx; }
-   string typeStr(void) const { return "tx"; }
+   std::string typeStr(void) const { return "tx"; }
 
    const BinaryData& getHash256()
    {
@@ -399,42 +402,44 @@ public:
       {
          Tx thisTx(&rawTx_[0], rawTx_.size());
 
-         txHash_ = move(thisTx.getThisHash());
+         txHash_ = std::move(thisTx.getThisHash());
       }
 
       return txHash_;
    }
 
-   const vector<uint8_t>& getRawTx(void) const
+   const std::vector<uint8_t>& getRawTx(void) const
    {
       return rawTx_;
    }
 
    void moveFrom(Payload_Tx& ptx)
    {
-      rawTx_ = move(ptx.rawTx_);
+      rawTx_ = std::move(ptx.rawTx_);
    }
 
-   void setRawTx(vector<uint8_t> rawtx)
+   void setRawTx(std::vector<uint8_t> rawtx)
    {
-      rawTx_ = move(rawtx);
+      rawTx_ = std::move(rawtx);
    }
 
    size_t getSize(void) const { return rawTx_.size(); }
 };
 
 ////reject
+class NodeUnitTest;
 struct Payload_Reject : public Payload
 {
+   friend class NodeUnitTest;
 private:
    PayloadType rejectType_;
-   char code_;
-   string reasonStr_;
-   vector<uint8_t> extra_;
+   int8_t code_;
+   std::string reasonStr_;
+   std::vector<uint8_t> extra_;
 
 private:
    size_t serialize_inner(uint8_t*) const 
-   { throw runtime_error("not implemened"); }
+   { throw std::runtime_error("not implemened"); }
 
 public:
 
@@ -449,11 +454,13 @@ public:
    void deserialize(uint8_t* dataptr, size_t len);
 
    PayloadType rejectType(void) const { return rejectType_; }
-   const vector<uint8_t>& getExtra(void) const { return extra_; }
-   const string& getReasonStr(void) const { return reasonStr_; }
+   const std::vector<uint8_t>& getExtra(void) const { return extra_; }
+   const std::string& getReasonStr(void) const { return reasonStr_; }
+
+   int8_t code (void) const { return code_; }
 
    PayloadType type(void) const { return Payload_reject; }
-   string typeStr(void) const { return "reject"; }
+   std::string typeStr(void) const { return "reject"; }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -461,10 +468,10 @@ class GetDataStatus
 {
 private:
    bool received_ = true;
-   string msg_;
+   std::string msg_;
 
-   shared_ptr<promise<shared_ptr<Payload>>> prom_;
-   shared_future<shared_ptr<Payload>> fut_;
+   std::shared_ptr<std::promise<std::shared_ptr<Payload>>> prom_;
+   std::shared_future<std::shared_ptr<Payload>> fut_;
 
 
 public:
@@ -472,97 +479,156 @@ public:
    
    GetDataStatus(void)
    {
-      prom_ = make_shared<promise<shared_ptr<Payload>>>();
+      prom_ = std::make_shared<std::promise<std::shared_ptr<Payload>>>();
       fut_ = prom_->get_future();
    }
 
-   shared_future<shared_ptr<Payload>> getFuture(void) const
+   std::shared_future<std::shared_ptr<Payload>> getFuture(void) const
    {
       return fut_;
    }
 
-   shared_ptr<promise<shared_ptr<Payload>>> getPromise(void) const
+   std::shared_ptr<std::promise<std::shared_ptr<Payload>>> getPromise(void) const
    {
       return prom_;
    }
 
-   void setMessage(const string& message)
+   void setMessage(const std::string& message)
    {
       msg_ = message;
    }
 
-   string getMessage(void) const { return msg_; }
+   std::string getMessage(void) const { return msg_; }
 
    bool status(void) const { return received_; }
    void setStatus(bool st) { received_ = st; }
 };
 
 ////////////////////////////////////////////////////////////////////////////////
-class BitcoinP2P
+class BitcoinP2PSocket : public PersistentSocket
 {
 private:
+   std::shared_ptr<Armory::Threading::BlockingQueue<
+      std::vector<uint8_t>>> readDataStack_;
+
+public:
+   BitcoinP2PSocket(const std::string& addr, const std::string& port,
+      std::shared_ptr<Armory::Threading::BlockingQueue<
+      std::vector<uint8_t>>> readStack) :
+      PersistentSocket(addr, port), readDataStack_(readStack)
+   {}
+
+   SocketType type(void) const override { return SocketBitcoinP2P; }
+
+   void pushPayload(
+      std::unique_ptr<Socket_WritePayload>,
+      std::shared_ptr<Socket_ReadPayload>) override;
+   void respond(std::vector<uint8_t>&) override;
+};
+
+////////////////////////////////////////////////////////////////////////////////
+class BitcoinNodeInterface
+{
+protected:
    const uint32_t magic_word_;
-   struct sockaddr node_addr_;
-   DedicatedBinarySocket binSocket_;
-
-   mutex connectMutex_, pollMutex_, writeMutex_;
-   unique_ptr<promise<bool>> connectedPromise_ = nullptr;
-   unique_ptr<promise<bool>> verackPromise_ = nullptr;
-   atomic<bool> nodeConnected_;
-
-   //to pass payloads between the poll thread and the processing one
-   shared_ptr<BlockingStack<vector<uint8_t>>> dataStack_;
-
-   exception_ptr select_except_ = nullptr;
-   exception_ptr process_except_ = nullptr;
+   std::atomic<bool> run_;
+      
+   //new block notification queue
+   std::shared_ptr<Armory::Threading::BlockingQueue<
+      std::vector<InvEntry>>> invBlockStack_;
 
    //callback lambdas
-   Stack<function<void(const vector<InvEntry>&)>> invBlockLambdas_;
-   function<void(vector<InvEntry>&)> invTxLambda_ = {};
-   function<void(void)> nodeStatusLambda_;
+   std::function<void(std::vector<InvEntry>&)> invTxLambda_;
+   std::function<void(std::unique_ptr<Payload>)> getTxDataLambda_;
+   std::function<void(void)> nodeStatusLambda_;
 
-   //stores callback by txhash for getdata packet we send to the node
-   TransactionalMap<BinaryData, shared_ptr<GetDataStatus>> getTxCallbackMap_;
-
-   atomic<bool> run_;
-   future<bool> shutdownFuture_;
-
-   uint32_t topBlock_ = UINT32_MAX;
+protected:
+   void processGetTx(std::unique_ptr<Payload>);
 
 public:
    struct getDataPayload
    {
-      shared_ptr<Payload> payload_;
-      shared_ptr<promise<bool>> promise_;
+      std::unique_ptr<Payload> payload_;
    };
-
-   TransactionalMap<BinaryData, getDataPayload> getDataPayloadMap_;
+   
+   Armory::Threading::TransactionalMap<
+      BinaryData, std::shared_ptr<getDataPayload>> getDataPayloadMap_;
 
 public:
-   static const map<string, PayloadType> strToPayload_;
+   BitcoinNodeInterface(uint32_t magic_word, bool watcher);
 
-protected:
-   void processInvBlock(vector<InvEntry>);
+   //virtuals
+   virtual ~BitcoinNodeInterface(void) = 0;
+
+   virtual void connectToNode(bool async) = 0;
+   virtual void shutdown(void);
+
+   virtual bool connected(void) const = 0;
+   virtual void sendMessage(std::unique_ptr<Payload>) = 0;
+
+   //locals
+   bool isSegWit(void) const { return PEER_USES_WITNESS; }
+   uint32_t getMagicWord(void) const { return magic_word_; }
+   std::shared_ptr<Armory::Threading::BlockingQueue<std::vector<InvEntry>>> 
+      getInvBlockStack(void) const { return invBlockStack_; }
+
+   void processInvTx(std::vector<InvEntry>);   
+   void processInvBlock(std::vector<InvEntry>);
+  
+   void registerInvTxLambda(std::function<void(std::vector<InvEntry>)> func);
+   void registerNodeStatusLambda(std::function<void(void)> lbd);
+   void registerGetTxCallback(
+      const std::function<void(std::unique_ptr<Payload>)>&);
+
+   void requestTx(std::vector<InvEntry>);
+};
+
+////////////////////////////////////////////////////////////////////////////////
+class BitcoinP2P : public BitcoinNodeInterface
+{
+private:
+   const std::string addr_;
+   const std::string port_;
+
+   struct sockaddr node_addr_;
+   std::unique_ptr<BitcoinP2PSocket> socket_;
+
+   std::mutex connectMutex_, pollMutex_, writeMutex_;
+   std::unique_ptr<std::promise<bool>> connectedPromise_ = nullptr;
+   std::unique_ptr<std::promise<bool>> verackPromise_ = nullptr;
+   std::atomic<bool> nodeConnected_;
+
+   //to pass payloads between the poll thread and the processing one
+   std::shared_ptr<Armory::Threading::BlockingQueue<
+      std::vector<uint8_t>>> dataStack_;
+
+   std::exception_ptr select_except_ = nullptr;
+   std::exception_ptr process_except_ = nullptr;
+
+   std::future<bool> shutdownFuture_;
+
+   uint32_t topBlock_ = UINT32_MAX;
+
+public:
+   static const std::map<std::string, PayloadType> strToPayload_;
 
 private:
+   void init(void);
    void connectLoop(void);
 
-   void pollSocketThread();
    void processDataStackThread(void);
-   void processPayload(vector<unique_ptr<Payload>>);
+   void processPayload(std::vector<std::unique_ptr<Payload>>);
 
-   void checkServices(unique_ptr<Payload>);
+   void checkServices(std::unique_ptr<Payload>);
    
    void gotVerack(void);
    void returnVerack(void);
 
-   void replyPong(unique_ptr<Payload>);
+   void replyPong(std::unique_ptr<Payload>);
 
-   void processInv(unique_ptr<Payload>);
-   void processInvTx(vector<InvEntry>);
-   void processGetData(unique_ptr<Payload>);
-   void processGetTx(unique_ptr<Payload>);
-   void processReject(unique_ptr<Payload>);
+   void processInv(std::unique_ptr<Payload>);
+   void processGetData(std::unique_ptr<Payload>);
+   void processReject(std::unique_ptr<Payload>);
 
    int64_t getTimeStamp() const;
 
@@ -572,74 +638,23 @@ private:
          nodeStatusLambda_();
    }
 
+   void sendMessage(std::vector<std::unique_ptr<Payload>>);
+
 public:
-   BitcoinP2P(const string& addr, const string& port, uint32_t magic_word);
+   BitcoinP2P(
+      const std::string& addr, const std::string& port, 
+      uint32_t magic_word, bool watcher);
    ~BitcoinP2P();
 
-   virtual void connectToNode(bool async);
-   virtual void shutdown(void);
-   void sendMessage(Payload&&);
+   //virtuals
+   void connectToNode(bool async) override;
+   void shutdown(void) override;
 
-   shared_ptr<Payload> getTx(const InvEntry&, uint32_t timeout);
-
-   void registerInvBlockLambda(function<void(const vector<InvEntry>)> func)
-   {
-      if (!run_.load(memory_order_relaxed))
-         throw runtime_error("node has been shutdown");
-
-      invBlockLambdas_.push_back(move(func));
-   }
-
-   void registerInvTxLambda(function<void(vector<InvEntry>)> func)
-   {
-      if (!run_.load(memory_order_relaxed))
-         throw runtime_error("node has been shutdown");
-
-      invTxLambda_ = move(func);
-   }
-
-   void registerGetTxCallback(const BinaryDataRef&, shared_ptr<GetDataStatus>);
-   void unregisterGetTxCallback(const BinaryDataRef&);
-
-   bool connected(void) const { return nodeConnected_.load(memory_order_acquire); }
-   bool isSegWit(void) const { return PEER_USES_WITNESS; }
-
+   void sendMessage(std::unique_ptr<Payload>) override;
+   bool connected(void) const override 
+   { return nodeConnected_.load(std::memory_order_acquire); }
+   
    void updateNodeStatus(bool connected);
-   void registerNodeStatusLambda(function<void(void)> lbd) { nodeStatusLambda_ = lbd; }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-class NodeUnitTest : public BitcoinP2P
-{
-public:
-   NodeUnitTest(const string& addr, const string& port, uint32_t magic_word) :
-      BitcoinP2P(addr, port, magic_word)
-   {}
-
-   void mockNewBlock(void)
-   {
-      InvEntry ie;
-      ie.invtype_ = Inv_Msg_Block;
-
-      vector<InvEntry> vecIE;
-      vecIE.push_back(ie);
-
-      processInvBlock(move(vecIE));
-   }
-
-   void connectToNode(bool async)
-   {}
-
-   void shutdown(void)
-   {
-      //clean up remaining lambdas
-      vector<InvEntry> ieVec;
-      InvEntry entry;
-      entry.invtype_ = Inv_Terminate;
-      ieVec.push_back(entry);
-
-      processInvBlock(ieVec);
-   }
 };
 
 #endif

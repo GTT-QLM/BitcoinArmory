@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <thread>
-#include "gtest.h"
+#include <gtest/gtest.h>
 
 #include "../ThreadSafeClasses.h"
 
@@ -28,6 +28,7 @@ using namespace std;
 #endif
 #endif
 
+using namespace Armory::Threading;
 
 ////////////////////////////////////////////////////////////////////////////////
 class ContainerTests : public ::testing::Test
@@ -61,10 +62,9 @@ TEST_F(ContainerTests, TransactionalMap)
 
    auto find_thread = [&theMap, &iterations](unsigned id, uint32_t* tally)
    {
-      auto mapptr = theMap.get();
-
       for (auto i = id * iterations; i < (id + 1) * iterations; i++)
       {
+         auto mapptr = theMap.get();
          auto iter = mapptr->find(i);
          if (iter != mapptr->end())
             *tally += iter->second;
@@ -84,6 +84,8 @@ TEST_F(ContainerTests, TransactionalMap)
 
    for (unsigned i = 0; i < threadCount_; i++)
       vecthr.push_back(thread(find_thread, i, &tallies[0] + i));
+
+   insert_thread(threadCount_);
 
    for (auto& thr : vecthr)
       if (thr.joinable())
@@ -167,7 +169,7 @@ TEST_F(ContainerTests, PileTest_Sequential)
       poptally += tally;
 
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(thePile.count(), 0);
+   EXPECT_EQ(thePile.count(), 0ULL);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -247,13 +249,13 @@ TEST_F(ContainerTests, PileTest_Concurrent)
       poptally += tally;
 
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(thePile.count(), 0);
+   EXPECT_EQ(thePile.count(), 0ULL);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 TEST_F(ContainerTests, StackTest_Sequential)
 {
-   Stack<uint64_t> theStack;
+   Queue<uint64_t> theStack;
    unsigned iterCount = 100000;
 
    auto push_thread = [&](uint64_t* tally)
@@ -318,13 +320,13 @@ TEST_F(ContainerTests, StackTest_Sequential)
       poptally += tally;
 
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(theStack.count(), 0);
+   EXPECT_EQ(theStack.count(), 0ULL);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 TEST_F(ContainerTests, StackTest_Concurrent)
 {
-   Stack<uint64_t> theStack;
+   Queue<uint64_t> theStack;
    unsigned iterCount = 100000;
 
    auto push_thread = [&](uint64_t* tally)
@@ -398,13 +400,13 @@ TEST_F(ContainerTests, StackTest_Concurrent)
       poptally += tally;
 
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(theStack.count(), 0);
+   EXPECT_EQ(theStack.count(), 0ULL);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 TEST_F(ContainerTests, BlockingStackTest_Sequential)
 {
-   BlockingStack<uint64_t> theStack;
+   BlockingQueue<uint64_t> theStack;
    unsigned iterCount = 100000;
 
    auto push_thread = [&](uint64_t* tally)
@@ -469,14 +471,14 @@ TEST_F(ContainerTests, BlockingStackTest_Sequential)
       poptally += tally;
 
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(theStack.count(), 0);
+   EXPECT_EQ(theStack.count(), 0ULL);
    EXPECT_EQ(theStack.waiting(), 0);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 TEST_F(ContainerTests, BlockingStackTest_Concurrent)
 {
-   BlockingStack<uint64_t> theStack;
+   BlockingQueue<uint64_t> theStack;
    unsigned iterCount = 100000;
 
    auto push_thread = [&](uint64_t* tally)
@@ -543,7 +545,7 @@ TEST_F(ContainerTests, BlockingStackTest_Concurrent)
 
    EXPECT_EQ(theStack.waiting(), 0);
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(theStack.count(), 0);
+   EXPECT_EQ(theStack.count(), 0ULL);
 
    theStack.clear();
 
@@ -573,15 +575,15 @@ TEST_F(ContainerTests, BlockingStackTest_Concurrent)
          popthr.join();
    }
 
-   EXPECT_NE(theStack.count(), 0);
+   EXPECT_NE(theStack.count(), 0ULL);
    theStack.clear();
-   EXPECT_EQ(theStack.count(), 0);
+   EXPECT_EQ(theStack.count(), 0ULL);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 TEST_F(ContainerTests, TimedStackTest_Concurrent)
 {
-   TimedStack<uint64_t> theStack;
+   TimedQueue<uint64_t> theStack;
    unsigned iterCount = 35000;
 
    auto push_thread = [&](uint64_t* tally)
@@ -666,7 +668,7 @@ TEST_F(ContainerTests, TimedStackTest_Concurrent)
 
    EXPECT_EQ(theStack.waiting(), 0);
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(theStack.count(), 0);
+   EXPECT_EQ(theStack.count(), 0ULL);
 
    push_threads.clear();
    push_tallies.clear(); push_tallies.resize(threadCount_);
@@ -690,7 +692,7 @@ TEST_F(ContainerTests, TimedStackTest_Concurrent)
 
    EXPECT_EQ(theStack.waiting(), 0);
    EXPECT_EQ(pushtally, poptally);
-   EXPECT_EQ(theStack.count(), 0);
+   EXPECT_EQ(theStack.count(), 0ULL);
 }
 
 

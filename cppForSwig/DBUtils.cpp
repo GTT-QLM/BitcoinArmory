@@ -12,6 +12,25 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "DBUtils.h"
+#ifdef _WIN32
+#include <Windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <dirent_win32.h>
+#include <ShlObj.h>
+
+#define unlink _unlink
+#define access _access
+#else
+#include <errno.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <dirent.h>
+#include <wordexp.h>
+#endif
+
+using namespace std;
 
 ////////////////////////////////////////////////////////////////////////////////
 const BinaryData DBUtils::ZeroConfHeader_ = BinaryData::CreateFromHex("FFFF");
@@ -297,4 +316,349 @@ bool DBUtils::fileExists(const string& path, int mode)
          nixmode |= W_OK;
       return access(path.c_str(), nixmode) == 0;
 #endif
+}
+
+/////////////////////////////////////////////////////////////////////////////
+void FileMap::unmap()
+{
+   if (filePtr_ != nullptr)
+   {
+#ifdef WIN32
+      if (!UnmapViewOfFile(filePtr_))
+         throw std::runtime_error("failed to unmap file");
+#else
+      if (munmap(filePtr_, size_))
+         throw std::runtime_error("failed to unmap file");
+#endif
+
+      filePtr_ = nullptr;
+   }
+}
+
+/////////////////////////////////////////////////////////////////////////////
+FileMap DBUtils::getMmapOfFile(const string& path, bool write)
+{
+   int fd = 0;
+   if (!DBUtils::fileExists(path, 2))
+      throw runtime_error("file does not exist");
+
+   FileMap fMap;
+
+   try
+   {
+#ifdef _WIN32
+      auto flag = _O_RDONLY | _O_BINARY;
+      if (write)
+         flag = _O_RDWR | _O_BINARY;
+      
+      fd = _open(path.c_str(), flag);
+      if (fd == -1)
+         throw runtime_error("failed to open file");
+
+      auto size = _lseek(fd, 0, SEEK_END);
+
+      if (size == 0)
+      {
+         stringstream ss;
+         ss << "empty block file under path: " << path;
+         throw ss.str();
+      }
+
+      _lseek(fd, 0, SEEK_SET);
+#else
+      auto flag = O_RDONLY;
+      if (write)
+         flag = O_RDWR;
+      fd = open(path.c_str(), flag);
+      if (fd == -1)
+         throw runtime_error("failed to open file");
+
+      auto size = lseek(fd, 0, SEEK_END);
+
+      if (size == 0)
+      {
+         stringstream ss;
+         ss << "empty block file under path: " << path;
+         throw ss.str();
+      }
+
+      lseek(fd, 0, SEEK_SET);
+#endif
+      fMap.size_ = size;
+
+#ifdef _WIN32
+      //create mmap
+      auto fileHandle = (HANDLE)_get_osfhandle(fd);
+      HANDLE mh;
+
+      uint32_t sizelo = size & 0xffffffff;
+      uint32_t sizehi = size >> 16 >> 16;
+
+      auto mmapflag = PAGE_READONLY;
+      if (write)
+         mmapflag = PAGE_READWRITE;
+      mh = CreateFileMapping(fileHandle, NULL, mmapflag,
+         sizehi, sizelo, NULL);
+      if (!mh)
+      {
+         auto errorCode = GetLastError();
+         stringstream errStr;
+         errStr << "Failed to create map of file. Error Code: " <<
+            errorCode << " (" << strerror(errorCode) << ")";
+         throw runtime_error(errStr.str());
+      }
+
+      auto viewFlag = FILE_MAP_READ;
+      if (write)
+         viewFlag = FILE_MAP_ALL_ACCESS;
+      fMap.filePtr_ = (uint8_t*)MapViewOfFileEx(mh, viewFlag, 0, 0, size, NULL);
+      if (fMap.filePtr_ == nullptr)
+      {
+         auto errorCode = GetLastError();
+         stringstream errStr;
+         errStr << "Failed to create map of file. Error Code: " <<
+            errorCode << " (" << strerror(errorCode) << ")";
+         throw runtime_error(errStr.str());
+      }
+
+      CloseHandle(mh);
+      _close(fd);
+#else
+      auto mapFlag = PROT_READ;
+      if (write)
+         mapFlag |= PROT_WRITE;
+      fMap.filePtr_ = (uint8_t*)mmap(0, size, mapFlag, MAP_SHARED,
+         fd, 0);
+      if (fMap.filePtr_ == MAP_FAILED) {
+         fMap.filePtr_ = NULL;
+         stringstream errStr;
+         errStr << "Failed to create map of file. Error Code: " <<
+            errno << " (" << strerror(errno) << ")";
+         cout << errStr.str() << endl;
+         throw runtime_error(errStr.str());
+      }
+
+      close(fd);
+#endif
+      fd = 0;
+   }
+   catch (runtime_error &e)
+   {
+      if (fd != 0)
+      {
+#ifdef _WIN32
+         _close(fd);
+#else
+         close(fd);
+#endif
+         fd = 0;
+      }
+
+      throw e;
+   }
+
+   return fMap;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+BinaryDataRef DBUtils::getDataRefForPacket(
+   const BinaryDataRef& packet)
+{
+   BinaryRefReader brr(packet);
+   auto len = brr.get_var_int();
+   if (len != brr.getSizeRemaining())
+      throw runtime_error("on disk data length mismatch");
+
+   return brr.get_BinaryDataRef(brr.getSizeRemaining());
+}
+
+////////////////////////////////////////////////////////////////////////////////
+struct stat DBUtils::getPathStat(const char* path, unsigned len)
+{
+   if (path == nullptr || len == 0)
+      throw runtime_error("invalid path");
+
+   if(strlen(path) != len)
+      throw runtime_error("invalid path");
+
+   if (access(path, 0) != 0)
+      throw runtime_error("invalid path");
+
+   struct stat status;
+   stat(path, &status);
+   return status;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+struct stat DBUtils::getPathStat(const string& path)
+{
+   return getPathStat(path.c_str(), path.size());
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool DBUtils::isFile(const string& path)
+{
+   struct stat status;
+   try
+   {
+      status = move(getPathStat(path));
+   }
+   catch (exception&)
+   {
+      return false;
+   }
+
+   return status.st_mode & S_IFREG;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+bool DBUtils::isDir(const string& path)
+{
+   struct stat status;
+   try
+   {
+      status = move(getPathStat(path));
+   }
+   catch (exception&)
+   {
+      return false;
+   }
+
+   return status.st_mode & S_IFDIR;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+int DBUtils::removeDirectory(const string& path)
+{
+   if (!isDir(path))
+      return -1;
+
+   DIR* current_dir = opendir(path.c_str());
+   if (current_dir == nullptr)
+      return -1;
+
+   //gather paths in dir
+   vector<string> file_vec;
+   dirent* filename = nullptr;
+   while ((filename = readdir(current_dir)) != nullptr)
+      file_vec.push_back(string(filename->d_name));
+
+   string dot(".");
+   string dotdot("..");
+   vector<string> path_vec;
+   for (auto val : file_vec)
+   {
+      if (val == dot || val == dotdot)
+         continue;
+
+      stringstream path_ss;
+      path_ss << path << "/" << val;
+
+      path_vec.push_back(path_ss.str());
+   }
+
+   closedir(current_dir);
+
+   for (auto& filepath : path_vec)
+   {
+      if (isDir(filepath))
+      {
+         auto result = removeDirectory(filepath);
+         if (result != 0)
+            return result;
+
+         continue;
+      }
+
+      auto result = unlink(filepath.c_str());
+      if (result != 0)
+         return result;
+   }
+
+#ifdef _WIN32
+   if (RemoveDirectory(path.c_str()) == 0)
+      return -1;
+#else
+   return rmdir(path.c_str());
+#endif
+
+   return 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+size_t DBUtils::getFileSize(const string& path)
+{
+   auto stat_struct = getPathStat(path);
+   return stat_struct.st_size;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void DBUtils::appendPath(string& base, const string& add)
+{
+   if (add.size() == 0)
+      return;
+
+   auto firstChar = add.c_str()[0];
+   if (base.size() > 0)
+   {
+      auto lastChar = base.c_str()[base.size() - 1];
+      if (firstChar != '\\' && firstChar != '/')
+         if (lastChar != '\\' && lastChar != '/')
+            base.append("/");
+   }
+
+   base.append(add);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+void DBUtils::expandPath(string& path)
+{
+   if (path.c_str()[0] != '~')
+      return;
+
+   //resolve ~
+#ifdef _WIN32
+   char* pathPtr = new char[MAX_PATH + 1];
+   if (SHGetFolderPath(0, CSIDL_APPDATA, 0, 0, pathPtr) != S_OK)
+   {
+      delete[] pathPtr;
+      throw runtime_error("failed to resolve appdata path");
+   }
+
+   string userPath(pathPtr);
+   delete[] pathPtr;
+#else
+   wordexp_t wexp;
+   wordexp("~", &wexp, 0);
+
+   if (wexp.we_wordc == 0)
+      throw runtime_error("failed to resolve home path");
+
+   string userPath(wexp.we_wordv[0]);
+   wordfree(&wexp);
+#endif
+
+   appendPath(userPath, path.substr(1));
+   path = move(userPath);
+}
+
+////////////////////////////////////////////////////////////////////////////////
+string DBUtils::getBaseDir(const string& path)
+{
+   //crawl back until folder market is hit
+   int pos = -1;
+   for (int i=path.size() - 1; i>-1; i--)
+   {
+      auto charPtr = path.c_str() + i;
+      if (*charPtr == '/' || *charPtr == '\\')
+      {
+         pos = i;
+         break;
+      }
+   }
+
+   if (pos == -1)
+      return string();
+
+   return path.substr(0, pos);
 }

@@ -4,15 +4,21 @@
 //  Distributed under the GNU Affero General Public License (AGPL v3)         //
 //  See LICENSE-ATI or http://www.gnu.org/licenses/agpl.html                  //
 //                                                                            //
+//                                                                            //
+//  Copyright (C) 2016-2021, goatpig                                          //
+//  Distributed under the MIT license                                         //
+//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //
+//                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 #ifndef SCRADDROBJ_H
 #define SCRADDROBJ_H
 
 #include "BinaryData.h"
-#include "lmdb_wrapper.h"
-#include "Blockchain.h"
-#include "BlockObj.h"
-#include "txio.h"
+#include "BlockchainDatabase/lmdb_wrapper.h"
+#include "BlockchainDatabase/Blockchain.h"
+#include "BlockchainDatabase/txio.h"
+#include "BlockchainDatabase/BlockObj.h"
+#include "ZeroConf.h"
 #include "LedgerEntry.h"
 #include "HistoryPager.h"
 
@@ -32,7 +38,7 @@
 // "address" is a term that will always exist in the Bitcoin ecosystem, and 
 // frequently used even when not preferred.
 //
-// Similarly, we refer to the member variable scraddr_ as a "scradder".  It
+// Similarly, we refer to the member variable scraddr_ as a "scradder". It
 // is actually a reduction of the TxOut script to a form that is identical
 // regardless of whether pay-to-pubkey or pay-to-pubkey-hash is used. 
 //
@@ -40,9 +46,13 @@
 ////////////////////////////////////////////////////////////////////////////////
 struct ScanAddressStruct
 {
-   set<BinaryData> invalidatedZCKeys_;
-   map<BinaryData, shared_ptr<map<BinaryData, TxIOPair>>> zcMap_;
-   map<BinaryData, LedgerEntry> zcLedgers_;
+   std::map<BinaryData, BinaryData>* invalidatedZcKeys_ = nullptr;
+   std::shared_ptr<MempoolSnapshot> zcState_;
+
+   std::map<BinaryData, std::set<BinaryData>> scrAddrToTxioKeys_;
+   std::map<std::string, std::map<BinaryData, LedgerEntry>> zcLedgers_;
+   std::shared_ptr<std::map<BinaryData, 
+      std::shared_ptr<std::set<BinaryDataRef>>>> newKeysAndScrAddr_;
 };
 
 class ScrAddrObj
@@ -54,7 +64,7 @@ private:
    {
       static const uint32_t UTXOperFetch = 100;
 
-      map<BinaryData, TxIOPair> utxoList_;
+      std::map<BinaryData, TxIOPair> utxoList_;
       uint32_t topBlock_ = 0;
       uint64_t value_ = 0;
 
@@ -70,10 +80,10 @@ private:
          scrAddrObj_(scrAddrObj)
       {}
 
-      const map<BinaryData, TxIOPair>& getUTXOs(void) const
+      const std::map<BinaryData, TxIOPair>& getUTXOs(void) const
       { return utxoList_; }
 
-      bool fetchMoreUTXO(function<bool(const BinaryData&)> spentByZC)
+      bool fetchMoreUTXO(std::function<bool(const BinaryData&)> spentByZC)
       {
          //return true if more UTXO were found, false otherwise
          if (topBlock_ < scrAddrObj_->bc_->top()->getBlockHeight())
@@ -96,7 +106,7 @@ private:
       }
 
       uint32_t fetchMoreUTXO(uint32_t start, uint32_t end,
-         function<bool(const BinaryData&)> spentByZC)
+         std::function<bool(const BinaryData&)> spentByZC)
       {
          uint32_t nutxo = 0;
          uint64_t val = 0;
@@ -150,8 +160,7 @@ private:
          utxoList_.clear();
       }
 
-      void addZcUTXOs(const map<BinaryData, TxIOPair>& txioMap,
-         function<bool(const BinaryData&)> isFromWallet)
+      void addZcUTXOs(const std::map<BinaryData, TxIOPair>& txioMap)
       {
          BinaryData ZCheader(WRITE_UINT16_LE(0xFFFF));
 
@@ -163,9 +172,6 @@ private:
             if (txio.second.hasTxIn())
                continue;
 
-            /*if (!isFromWallet(txio.second.getDBKeyOfOutput().getSliceCopy(0, 6)))
-               continue;*/
-
             utxoList_.insert(txio);
          }
       }
@@ -176,139 +182,86 @@ public:
    ScrAddrObj() :
       db_(nullptr),
       bc_(nullptr),
-      scrAddr_(0), firstBlockNum_(0), firstTimestamp_(0),
-      lastBlockNum_(0), lastTimestamp_(0), hasMultisigEntries_(false),
       totalTxioCount_(0), utxos_(this)
-   {
-      relevantTxIO_.clear();
-   }
+   {}
 
-   ScrAddrObj(LMDBBlockDatabase *db, Blockchain *bc,
-              BinaryData    addr, 
-              uint32_t      firstBlockNum  = UINT32_MAX,
-              uint32_t      firstTimestamp = UINT32_MAX,
-              uint32_t      lastBlockNum   = 0,
-              uint32_t      lastTimestamp  = 0);
+   ScrAddrObj(LMDBBlockDatabase *db, Blockchain *bc, ZeroConfContainer *zc,
+      BinaryDataRef addr);
 
    ScrAddrObj(const ScrAddrObj& rhs) : 
       utxos_(nullptr)
    {
       *this = rhs;
    }
-   
-   BinaryData const &  getScrAddr(void) const    {return scrAddr_;       }
-   uint32_t       getFirstBlockNum(void) const   {return firstBlockNum_; }
-   uint32_t       getFirstTimestamp(void) const  {return firstTimestamp_;}
-   uint32_t       getLastBlockNum(void) const    {return lastBlockNum_;  }
-   uint32_t       getLastTimestamp(void) const   {return lastTimestamp_; }
-   void           setFirstBlockNum(uint32_t b)   { firstBlockNum_  = b; }
-   void           setFirstTimestamp(uint32_t t)  { firstTimestamp_ = t; }
-   void           setLastBlockNum(uint32_t b)    { lastBlockNum_   = b; }
-   void           setLastTimestamp(uint32_t t)   { lastTimestamp_  = t; }
 
-   void           setScrAddr(LMDBBlockDatabase *db, BinaryData bd) { db_ = db; scrAddr_.copyFrom(bd);}
+   const BinaryDataRef& getScrAddr(void) const { return scrAddr_; }
+//   void setScrAddr(LMDBBlockDatabase *db, BinaryData bd) { db_ = db; scrAddr_.copyFrom(bd);}
 
    // BlkNum is necessary for "unconfirmed" list, since it is dependent
    // on number of confirmations.  But for "spendable" TxOut list, it is
    // only a convenience, if you want to be able to calculate numConf from
    // the Utxos in the list.  If you don't care (i.e. you only want to 
    // know what TxOuts are available to spend, you can pass in 0 for currBlk
-   uint64_t getFullBalance() const;
+   uint64_t getFullBalance(unsigned updateID = UINT32_MAX) const;
    uint64_t getSpendableBalance(uint32_t currBlk) const;
-   uint64_t getUnconfirmedBalance(uint32_t currBlk) const;
+   uint64_t getUnconfirmedBalance(uint32_t currBlk, unsigned confTarget) const;
 
-   vector<UnspentTxOut> getFullTxOutList(uint32_t currBlk=UINT32_MAX, bool ignoreZC=true) const;
-   vector<UnspentTxOut> getSpendableTxOutList(bool ignoreZC=true) const;
-
-
-   const map<BinaryData, LedgerEntry> & getTxLedger(void) const 
-   { return *ledger_; }
+   std::vector<UnspentTxOut> getFullTxOutList(uint32_t currBlk=UINT32_MAX, bool ignoreZC=true) const;
+   std::vector<UnspentTxOut> getSpendableTxOutList(bool ignoreZC=true) const;
    
-   vector<LedgerEntry> getTxLedgerAsVector(
-      map<BinaryData, LedgerEntry>& leMap) const;
+   std::vector<LedgerEntry> getTxLedgerAsVector(
+      const std::map<BinaryData, LedgerEntry>* leMap) const;
 
-   size_t getTxLedgerSize(void) const
-   {
-      if (ledger_ == nullptr)
-         return 0;
-      return ledger_->size(); }
-
-
-   map<BinaryData, TxIOPair> &   getTxIOMap(void) { return relevantTxIO_; }
-   const map<BinaryData, TxIOPair> & getTxIOMap(void) const 
-                           { return relevantTxIO_; }
-
-   void addTxIO(TxIOPair & txio, bool isZeroConf=false);
-
-   void pprintLedger(void) const;
    void clearBlkData(void);
 
    bool operator== (const ScrAddrObj& rhs) const
    { return (scrAddr_ == rhs.scrAddr_); }
 
-   void updateTxIOMap(map<BinaryData, TxIOPair>& txio_map);
+   std::map<BinaryData, TxIOPair> scanZC(
+      const ScanAddressStruct&, std::function<bool(const BinaryDataRef)>, int32_t);
+   bool purgeZC(const std::set<BinaryData>&, const std::set<BinaryData>&);
 
-   void scanZC(const ScanAddressStruct&, function<bool(const BinaryDataRef)>,
-      int32_t);
-   bool purgeZC(const set<BinaryData>& invalidatedTxOutKeys);
-
-   void updateAfterReorg(uint32_t lastValidBlockHeight);
-
-   void updateLedgers(map<BinaryData, LedgerEntry>& leMap,
-                      const map<BinaryData, TxIOPair>& txioMap,
-                      uint32_t startBlock, uint32_t endBlock, 
-                      bool purge = false) const;
-
-   void updateLedgers(const map<BinaryData, TxIOPair>& txioMap,
-                      uint32_t startBlock, uint32_t endBlock,
-                      bool purge = false)
-   { updateLedgers(*ledger_, txioMap, startBlock, endBlock, purge); }
+   std::map<BinaryData, LedgerEntry> updateLedgers(
+                      const std::map<BinaryData, TxIOPair>& txioMap,
+                      uint32_t startBlock, uint32_t endBlock) const;
 
    void setTxioCount(uint64_t count) { totalTxioCount_ = count; }
-   uint64_t getTxioCount(void) const { return getTxioCountFromSSH(); }
-   uint64_t getTxioCountFromSSH(void) const;
+   uint64_t getTxioCount(void) const { return getTxioCountFromSSH(true); }
+   uint64_t getTxioCountFromSSH(bool withZc) const;
 
    void mapHistory(void);
 
-   const map<uint32_t, uint32_t>& getHistSSHsummary(void) const
+   const std::map<uint32_t, uint32_t>& getHistSSHsummary(void) const
    { return hist_.getSSHsummary(); }
 
-   void fetchDBScrAddrData(uint32_t startBlock, 
-                           uint32_t endBlock,
-                           int32_t updateID);
-
-   void getHistoryForScrAddr(
+   std::map<BinaryData, TxIOPair> getHistoryForScrAddr(
       uint32_t startBlock, uint32_t endBlock,
-      map<BinaryData, TxIOPair>& output,
       bool update,
       bool withMultisig = false) const;
+   std::map<BinaryData, TxIOPair> getTxios(void) const;
 
    size_t getPageCount(void) const { return hist_.getPageCount(); }
-   vector<LedgerEntry> getHistoryPageById(uint32_t id);
-   void updateLedgerPointer(void) 
-      { ledger_ = &hist_.getPageLedgerMap(0); }
+   std::vector<LedgerEntry> getHistoryPageById(uint32_t id);
 
    ScrAddrObj& operator= (const ScrAddrObj& rhs);
 
-   const map<BinaryData, TxIOPair>& getPreparedTxOutList(void) const
+   const std::map<BinaryData, TxIOPair>& getPreparedTxOutList(void) const
    { return utxos_.getUTXOs(); }
-   
+
    bool getMoreUTXOs(pagedUTXOs&, 
-      function<bool(const BinaryData&)> hasTxOutInZC) const;
-   bool getMoreUTXOs(function<bool(const BinaryData&)> hasTxOutInZC);
-   vector<UnspentTxOut> getAllUTXOs(
-      function<bool(const BinaryData&)> hasTxOutInZC) const;
+      std::function<bool(const BinaryData&)> hasTxOutInZC) const;
+   bool getMoreUTXOs(std::function<bool(const BinaryData&)> hasTxOutInZC);
+   std::vector<UnspentTxOut> getAllUTXOs(
+      std::function<bool(const BinaryData&)> hasTxOutInZC) const;
 
    uint64_t getLoadedTxOutsValue(void) const { return utxos_.getValue(); }
    uint32_t getLoadedTxOutsCount(void) const { return utxos_.getCount(); }
 
    void resetTxOutHistory(void) { utxos_.reset(); }
 
-   LedgerEntry getFirstLedger(void) const;
-
-   void addZcUTXOs(const map<BinaryData, TxIOPair>& txioMap,
-      function<bool(const BinaryData&)> isFromWallet)
-   { utxos_.addZcUTXOs(txioMap, isFromWallet); }
+   void addZcUTXOs(const std::map<BinaryData, TxIOPair>& txioMap,
+      std::function<bool(const BinaryData&)>)
+   { utxos_.addZcUTXOs(txioMap); }
 
    uint32_t getBlockInVicinity(uint32_t blk) const;
    uint32_t getPageIdForBlockHeight(uint32_t blk) const;
@@ -317,7 +270,7 @@ public:
    {
       //return UINT32_MAX unless count has changed since last call
       //(or it's the first call)
-      auto count = getTxioCountFromSSH();
+      auto count = getTxioCountFromSSH(false);
       if (count == txioCountForLedgers_)
          return UINT32_MAX;
 
@@ -328,20 +281,11 @@ public:
 private:
    LMDBBlockDatabase *db_;
    Blockchain        *bc_;
+   ZeroConfContainer *zc_;
    
-   BinaryData     scrAddr_; // this includes the prefix byte!
-   uint32_t       firstBlockNum_;
-   uint32_t       firstTimestamp_;
-   uint32_t       lastBlockNum_;
-   uint32_t       lastTimestamp_;
+   BinaryDataRef scrAddr_; //this includes the prefix byte!
 
-   // If any multisig scripts that include this address, we'll track them
-   bool           hasMultisigEntries_=false;
-
-   // Each address will store a list of pointers to its transactions
-   map<BinaryData, TxIOPair>     relevantTxIO_;
-   map<BinaryData, LedgerEntry>*  ledger_ = &LedgerEntry::EmptyLedgerMap_;
-   
+   // Each address will store a list of pointers to its transactions   
    mutable uint64_t totalTxioCount_=0;
    mutable uint32_t lastSeenBlock_=0;
 
@@ -353,9 +297,11 @@ private:
    //fetches and maintains utxos
    pagedUTXOs   utxos_;
 
-   map<BinaryData, set<BinaryData> > validZCKeys_;
+   std::map<BinaryData, BinaryData> zcInputKeys_;
+   std::map<BinaryData, TxIOPair> zcTxios_;
 
-   int32_t updateID_ = 0;
+   mutable int32_t updateID_ = 0;
+   mutable uint64_t internalBalance_ = 0;
 };
 
 #endif

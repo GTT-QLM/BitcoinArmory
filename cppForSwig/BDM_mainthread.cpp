@@ -5,63 +5,30 @@
 //  See LICENSE-ATI or http://www.gnu.org/licenses/agpl.html                  //
 //                                                                            //
 //                                                                            //
-//  Copyright (C) 2016, goatpig                                               //            
+//  Copyright (C) 2016-2021, goatpig                                          //
 //  Distributed under the MIT license                                         //
-//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //                                   
+//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "BDM_mainthread.h"
-#include "BlockUtils.h"
 #include "BlockDataViewer.h"
 
 #include "nodeRPC.h"
+#include "BitcoinP2p.h"
 
 #include <ctime>
 
-////////////////////////////////////////////////////////////////////////////////
-void BlockDataManager::registerBDVwithZCcontainer(
-   BDV_Server_Object* bdvPtr)
-{
-   auto filter = [bdvPtr](const BinaryData& scrAddr)->bool
-   {
-      return bdvPtr->hasScrAddress(scrAddr);
-   };
-
-   auto newzc = [bdvPtr](
-      map<BinaryData, shared_ptr<map<BinaryData, TxIOPair>>> zcMap)->void
-   {
-      bdvPtr->zcCallback(move(zcMap));
-   };
-
-   auto zcerror = [bdvPtr](string& error, string& id)->void
-   {
-      bdvPtr->zcErrorCallback(error, id);
-   };
-
-   ZeroConfContainer::BDV_Callbacks callbacks;
-   callbacks.addressFilter_ = filter;
-   callbacks.newZcCallback_ = newzc;
-   callbacks.zcErrorCallback_ = zcerror;
-
-   zeroConfCont_->insertBDVcallback(
-      move(bdvPtr->getID()), move(callbacks));
-}
-
-////////////////////////////////////////////////////////////////////////////////
-void BlockDataManager::unregisterBDVwithZCcontainer(
-   const string& bdvID)
-{
-   zeroConfCont_->eraseBDVcallback(bdvID);
-}
+using namespace std;
+using namespace Armory::Config;
 
 BDM_CallBack::~BDM_CallBack()
 {}
 
-BlockDataManagerThread::BlockDataManagerThread(const BlockDataManagerConfig &config)
+BlockDataManagerThread::BlockDataManagerThread()
 {
    pimpl = new BlockDataManagerThreadImpl;
-   pimpl->bdm = new BlockDataManager(config);
+   pimpl->bdm = new BlockDataManager();
 }
 
 BlockDataManagerThread::~BlockDataManagerThread()
@@ -80,7 +47,6 @@ BlockDataManagerThread::~BlockDataManagerThread()
    }
 }
 
-
 void BlockDataManagerThread::start(BDM_INIT_MODE mode)
 {
    pimpl->mode = mode;
@@ -94,15 +60,23 @@ BlockDataManager *BlockDataManagerThread::bdm()
    return pimpl->bdm;
 }
 
-void BlockDataManagerThread::shutdown()
+bool BlockDataManagerThread::shutdown()
 {
-   if (pimpl->run)
-   {
-      pimpl->run = false;
+   if (pimpl == nullptr)
+      return false;
+   
+   pimpl->bdm->shutdownNotifications();
 
-      if (pimpl->tID.joinable())
-         pimpl->tID.join();
-   }
+   if (!pimpl->run)
+      return true;
+
+   pimpl->run = false;
+   pimpl->bdm->shutdownNode();
+
+   if (pimpl->tID.joinable())
+      pimpl->tID.join();
+
+   return true;
 }
 
 void BlockDataManagerThread::join()
@@ -112,24 +86,6 @@ void BlockDataManagerThread::join()
       if (pimpl->tID.joinable())
          pimpl->tID.join();
    }
-}
-
-
-namespace
-{
-class OnFinish
-{
-   const function<void()> fn;
-public:
-   OnFinish(const function<void()> &_fn)
-      : fn(_fn) { }
-   ~OnFinish()
-   {
-      fn();
-   }
-};
-
-
 }
 
 void BlockDataManagerThread::run()
@@ -152,14 +108,16 @@ try
             make_unique<BDV_Notification_NodeStatus>(move(nodeStatus));
          bdm->notificationStack_.push_back(move(notifPtr));
       }
-      catch (exception&)
+      catch (exception& e)
       {
+         LOGERR << "Can't get node status: " << e.what();
       }
    };
 
    //connect to node as async, no need to wait for a succesful connection
    //to init the DB
-   bdm->networkNode_->connectToNode(true);
+   bdm->processNode_->connectToNode(true);
+   bdm->watchNode_->connectToNode(true);
 
    //if RPC is running, wait on node init
    try
@@ -173,13 +131,6 @@ try
    }
 
    tuple<BDMPhase, double, unsigned, unsigned> lastvalues;
-   time_t lastProgressTime = 0;
-
-   class BDMStopRequest
-   {
-   public:
-      virtual ~BDMStopRequest() { }
-   };
 
    const auto loadProgress
       = [&](BDMPhase phase, double prog, unsigned time, unsigned numericProgress)
@@ -189,114 +140,122 @@ try
          phase, prog, time, numericProgress, vector<string>());
 
       bdm->notificationStack_.push_back(move(notifPtr));
-
-      if (!pimpl->run)
-      {
-         LOGINFO << "Stop requested detected";
-         throw BDMStopRequest();
-      }
    };
 
-   try
-   {
-      unsigned mode = pimpl->mode & 0x00000003;
-      bool clearZc = bdm->config().clearMempool_;
+   unsigned mode = pimpl->mode & 0x00000003;
+   bool clearZc = DBSettings::clearMempool();
 
-      if (mode == 0) bdm->doInitialSyncOnLoad(loadProgress);
-      else if (mode == 1) bdm->doInitialSyncOnLoad_Rescan(loadProgress);
-      else if (mode == 2) bdm->doInitialSyncOnLoad_Rebuild(loadProgress);
-      else if (mode == 3) bdm->doInitialSyncOnLoad_RescanBalance(loadProgress);
-
-      if (!bdm->config().checkChain_)
-         bdm->enableZeroConf(clearZc);
-   }
-   catch (BDMStopRequest&)
+   switch (mode)
    {
-      LOGINFO << "UI asked build/scan thread to finish";
-      return;
+   case 0:
+      bdm->doInitialSyncOnLoad(loadProgress);
+      break;
+
+   case 1:
+      bdm->doInitialSyncOnLoad_Rescan(loadProgress);
+      break;
+
+   case 2:
+      bdm->doInitialSyncOnLoad_Rebuild(loadProgress);
+      break;
+
+   case 3:
+      bdm->doInitialSyncOnLoad_RescanBalance(loadProgress);
+      break;
+
+   default:
+      throw runtime_error("invalid bdm init mode");
    }
+
+   if (!DBSettings::checkChain())
+      bdm->enableZeroConf(clearZc);
 
    isReadyPromise.set_value(true);
 
-   if (bdm->config().checkChain_)
+   if (DBSettings::checkChain())
       return;
 
-   auto updateChainLambda = [bdm, this]()->bool
+   auto updateChainLambda = [bdm, this]()->void
    {
+      LOGINFO << "readBlkFileUpdate";
       auto reorgState = bdm->readBlkFileUpdate();
       if (reorgState.hasNewTop_)
-      {
+      {            
          //purge zc container
-         ZeroConfContainer::ZcActionStruct zcaction;
-         zcaction.action_ = Zc_Purge;
-         zcaction.finishedPromise_ = make_shared<promise<bool>>();
-         auto purgeFuture = zcaction.finishedPromise_->get_future();
-
-         bdm->zeroConfCont_->newZcStack_.push_back(move(zcaction));
-
-         //wait on purge
-         purgeFuture.get();
+         auto purgeFuture = 
+            bdm->zeroConfCont_->pushNewBlockNotification(reorgState);
+         auto purgePacket = purgeFuture.get();
 
          //notify bdvs
          auto&& notifPtr =
-            make_unique<BDV_Notification_NewBlock>(move(reorgState));
+            make_unique<BDV_Notification_NewBlock>(
+               move(reorgState), purgePacket);
+         bdm->triggerOneTimeHooks(notifPtr.get());
          bdm->notificationStack_.push_back(move(notifPtr));
 
-         return true;
-      }
+         stringstream ss;
+         ss << "found new top!" << endl;
+         ss << "  hash: " << reorgState.newTop_->getThisHash().toHexStr() << endl;
+         ss << "  height: " << reorgState.newTop_->getBlockHeight();
 
-      return false;
+         LOGINFO << ss.str();
+      }
    };
 
-   bdm->networkNode_->registerNodeStatusLambda(updateNodeStatusLambda);
+   bdm->processNode_->registerNodeStatusLambda(updateNodeStatusLambda);
    bdm->nodeRPC_->registerNodeStatusLambda(updateNodeStatusLambda);
 
+   auto newBlockStack = bdm->processNode_->getInvBlockStack();
    while (pimpl->run)
    {
-      //register promise with p2p interface
-      auto newBlocksPromise = make_shared<promise<bool>>();
-      auto newBlocksFuture = newBlocksPromise->get_future();
-
-      auto newBlocksCallback =
-         [newBlocksPromise](const vector<InvEntry>& vecIE)->void
+      try
       {
-         for (auto& ie : vecIE)
+         //wait on a new block InvEntry, blocking is on
+         auto&& invVec = newBlockStack->pop_front();
+
+         bool hasNewBlocks = true;
+         while (hasNewBlocks)
          {
-            if (ie.invtype_ == Inv_Terminate)
+            //check blocks on disk, update chain state accordingly
+            updateChainLambda();
+            hasNewBlocks = false;
+
+            while (true)
             {
+               /*
+               More new blocks may have appeared while we were parsing the
+               current batch. The chain update code will grab as many blocks
+               as it sees in a single call. Therefor, while N new blocks 
+               generate N new block notifications, a single call to 
+               updateChainLambda would cover them all.
+
+               updateChainLambda is an expensive call and it is unnecessary to
+               run it as many times as we have pending new block notifications.
+               The notifications just indicate that updateChainLamda should be 
+               ran, not how often. Hence after a run to updateChainLambda, we
+               want to deplete the block notification queue, run
+               updateChainLambda one more time for good measure, and break out
+               of the inner, non blocking queue wait loop once it is empty.
+
+               The outer blocking queue wait will then once again act as the 
+               signal to check the chain and deplete the queue
+               */
+               
                try
-               {
-                  throw runtime_error("terminate");
+               {    
+                  //wait on new block entry, do not block for the inner loop     
+                  invVec = move(newBlockStack->pop_front(false));
+                  hasNewBlocks = true;
                }
-               catch (...)
+               catch (Armory::Threading::IsEmpty&)
                {
-                  newBlocksPromise->set_exception(current_exception());
-                  return;
+                  break;
                }
             }
          }
-
-         newBlocksPromise->set_value(true);
-      };
-
-      try
-      {
-         bdm->networkNode_->registerInvBlockLambda(newBlocksCallback);
-
-         //keep updating until there are no more new blocks
-         while (updateChainLambda());
-
-         //wait on future
-         newBlocksFuture.get();
       }
-      catch (exception &e)
+      catch (Armory::Threading::StopBlockingLoop&)
       {
-         LOGERR << "caught exception in main thread: " << e.what();
-         break;
-      }
-      catch (...)
-      {
-         LOGERR << "caught unknown exception in main thread";
          break;
       }
    }

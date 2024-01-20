@@ -19,958 +19,1003 @@
 #include <thread>
 #include <exception>
 #include <iostream>
+#include <condition_variable>
+#include <deque>
 
-#include "make_unique.h"
-
-using namespace std;
-
-class IsEmpty
-{};
-
-class StopBlockingLoop
-{};
-
-struct StackTimedOutException
-{};
-
-////////////////////////////////////////////////////////////////////////////////
-template <typename T> class Entry
+namespace Armory
 {
-private:
-   T obj_;
-
-public:
-   Entry<T>* next_ = nullptr;
-
-public:
-   Entry<T>(const T& obj) :
-      obj_(obj)
-   {}
-
-   Entry<T>(T&& obj) : 
-      obj_(obj)
-   {}
-
-   T get(void)
+   namespace Threading
    {
-      return move(obj_);
-   }
-};
+      class IsEmpty
+      {};
 
-////////////////////////////////////////////////////////////////////////////////
-template <typename T> class AtomicEntry
-{
-private:
-   T obj_;
+      class StopBlockingLoop
+      {};
 
-public:
-   atomic<AtomicEntry<T>*> next_;
+      struct StackTimedOutException
+      {};
 
-public:
-   AtomicEntry(const T& obj) :
-      obj_(obj)
-   {      
-      next_.store(nullptr, memory_order_relaxed);
-   }
-
-   AtomicEntry(T&& obj)  :
-      obj_(move(obj))
-   {
-      next_.store(nullptr, memory_order_relaxed);
-   }
-
-   T get(void)
-   {
-      return move(obj_);
-   }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-template<typename T> class Pile
-{
-   /***
-   lockless LIFO container class
-   ***/
-private:
-   atomic<AtomicEntry<T>*> top_;
-   AtomicEntry<T>* maxptr_;
-
-   atomic<size_t> count_;
-
-public:
-   Pile()
-   {
-      maxptr_ = (AtomicEntry<T>*)SIZE_MAX;
-      top_.store(nullptr, memory_order_relaxed);
-      count_.store(0, memory_order_relaxed);
-   }
-
-   ~Pile()
-   {
-      clear();
-   }
-
-   void push_back(const T& obj)
-   {
-      AtomicEntry<T>* nextentry = new AtomicEntry<T>(obj);
-      nextentry->next_.store(maxptr_, memory_order_release);
-
-      auto topentry = top_.load(memory_order_acquire);
-      do
+      //////////////////////////////////////////////////////////////////////////
+      template <typename T> class Entry
       {
-         while (topentry == maxptr_)
-            topentry = top_.load(memory_order_acquire);
-      }
-      while (!top_.compare_exchange_weak(topentry, nextentry,
-         memory_order_release, memory_order_relaxed));
+      private:
+         T obj_;
 
-      nextentry->next_.store(topentry, memory_order_release);
+      public:
+         Entry<T>* next_ = nullptr;
 
-      count_.fetch_add(1, memory_order_relaxed);
-   }
-  
-   T pop_back(void)
-   {
-      AtomicEntry<T>* topentry = top_.load(memory_order_acquire);
+      public:
+         Entry<T>(const T& obj) :
+            obj_(obj)
+         {}
 
-      do
-      {
-         //1: make sure the value we got out of top_ is not the marker 
-         //invalid value, otherwise keep load top_
-         while (topentry == maxptr_)
-            topentry = top_.load(memory_order_acquire);
+         Entry<T>(T&& obj) :
+            obj_(obj)
+         {}
 
-         //2: with a valid topentry, try to compare_exchange top_ for
-         //the invalid value
-      } 
-      while (!top_.compare_exchange_weak(topentry, maxptr_,
-         memory_order_release, memory_order_relaxed));
-
-      //3: if topentry is empty, the container is emtpy, throw
-      if (topentry == nullptr)
-      {
-         //make sure the replace the marker value with nullptr in top_
-         top_.store(nullptr, memory_order_release);
-         throw IsEmpty();
-      }
-
-      /*4: if we got this far we guarantee 2 things:
-      - topentry is neither null nor the invalid marker
-      - topentry has yet to be derefenced in any thread, in other 
-        words it is safe to read and delete in this particular thread
-      - top_ is set to the invalid marker so we have to set it
-        before other threads can get this far
-      */ 
-
-      while (topentry->next_.load(memory_order_acquire) == maxptr_);
-      top_.store(topentry->next_, memory_order_release);
-
-      auto&& retval = topentry->get();
-
-      count_.fetch_sub(1, memory_order_relaxed);
-
-      delete topentry;
-      return move(retval);
-   }
-
-   void clear(void)
-   {
-      try
-      {
-         while (1)
-            pop_back();
-      }
-      catch (IsEmpty&)
-      {}
-
-      count_.store(0, memory_order_relaxed);
-   }
-
-   size_t count(void) const
-   {
-      return count_.load(memory_order_relaxed);
-   }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-template <typename T> class Stack
-{
-   /***
-   lockless FIFO container class
-   ***/
-
-private:
-   atomic<AtomicEntry<T>*> top_;
-   atomic<AtomicEntry<T>*> bottom_;
-   AtomicEntry<T>* maxptr_;
-
-protected:
-   atomic<size_t> count_;
-   exception_ptr exceptPtr_ = nullptr;
-
-   atomic<void*> promPtr_;
-   atomic<void*> futPtr_;
-
-   atomic<int> replaceFut_;
-
-protected:
-   virtual shared_future<bool> get_future()
-   {
-      int val = -1, val1;
-
-      do
-      {
-         while (val == -1)
-            val = replaceFut_.load(memory_order_acquire);
-
-         val1 = val + 1;
-      } while (!replaceFut_.compare_exchange_weak(val, val1,
-         memory_order_release, memory_order_relaxed));
-
-      auto futptr = futPtr_.load(memory_order_acquire);
-      auto fut = *(shared_future<bool>*)futptr;
-
-      replaceFut_.fetch_sub(1, memory_order_acq_rel);
-      return fut;
-   }
-
-   void pop_promise(void)
-   {
-      int zero = 0;
-      while (!replaceFut_.compare_exchange_weak(zero, -1,
-         memory_order_release, memory_order_relaxed))
-      {
-         if (zero == -1)
-            return;
-
-         zero = 0;
-      }
-
-      auto oldprom = (promise<bool>*)promPtr_.load(memory_order_acquire);
-      oldprom->set_value(true);
-
-      auto newprom = new promise<bool>();
-      promPtr_.store((void*)newprom, memory_order_release);
-
-      auto newfut = new shared_future<bool>();
-      shared_future<bool> fut = newprom->get_future();
-      *newfut = fut;
-
-      auto futval =
-         (shared_future<bool>*)futPtr_.load(memory_order_acquire);
-      futPtr_.store((void*)newfut, memory_order_release);
-
-      delete futval;
-      delete oldprom;
-
-      replaceFut_.store(0, memory_order_release);
-   }
-
-public:
-   Stack()
-   {
-      maxptr_ = (AtomicEntry<T>*)SIZE_MAX;
-      top_.store(nullptr, memory_order_relaxed);
-      bottom_.store(nullptr, memory_order_relaxed);
-      count_.store(0, memory_order_relaxed);
-
-      auto newprom = new promise<bool>();
-      promPtr_.store((void*)newprom, memory_order_release);
-
-      auto futptr = new shared_future<bool>();
-      *futptr = newprom->get_future();
-      futPtr_.store((void*)futptr, memory_order_release);
-
-      replaceFut_.store(0, memory_order_release);
-   }
-
-   ~Stack()
-   {
-      clear();
-
-      auto futptr = (shared_future<bool>*)futPtr_.load();
-      auto promptr = (promise<bool>*)promPtr_.load();
-
-      delete futptr;
-      delete promptr;
-   }
-
-   virtual T pop_front(bool rethrow = true)
-   {
-      //throw if empty
-      auto valptr = bottom_.load(memory_order_acquire);
-
-      do
-      {
-         while (valptr == maxptr_)
-            valptr = bottom_.load(memory_order_acquire);
-
-         if (valptr == nullptr)
+         T get(void)
          {
-            /*if (this->count() != 0)
-               cout << "~~~ count != 0" << endl;*/
-            throw IsEmpty();
+            return move(obj_);
          }
-      } 
-      while (!bottom_.compare_exchange_weak(valptr, maxptr_,
-      memory_order_acq_rel, memory_order_acquire));
+      };
 
-      auto valptrcopy = valptr;
-      if (!top_.compare_exchange_strong(valptrcopy, maxptr_,
-         memory_order_acq_rel, memory_order_acquire))
+      //////////////////////////////////////////////////////////////////////////
+      template <typename T> class AtomicEntry
       {
-         AtomicEntry<T>* nextptr;
-         do
+      private:
+         T obj_;
+
+      public:
+         std::atomic<AtomicEntry<T>*> next_;
+
+      public:
+         AtomicEntry(const T& obj) :
+            obj_(obj)
          {
-            nextptr = valptr->next_.load(memory_order_acquire);
-         } while (nextptr == maxptr_);
-      
-         count_.fetch_sub(1, memory_order_acq_rel);
-         bottom_.store(nextptr, memory_order_release);
-      }
-      else
-      {
-         count_.fetch_sub(1, memory_order_acq_rel);
-         bottom_.store(nullptr, memory_order_release);
-         top_.store(nullptr, memory_order_release);
-      }
-
-      //delete ptr and return value
-      auto&& retval = valptr->get();
-      delete valptr;
-
-      if (rethrow && exceptPtr_ != nullptr)
-         rethrow_exception(exceptPtr_);
-
-      return move(retval);
-   }
-
-   virtual void push_back(T&& obj)
-   {
-      //create object
-      AtomicEntry<T>* newentry = new AtomicEntry<T>(move(obj));
-      newentry->next_.store(maxptr_, memory_order_release);
-
-      AtomicEntry<T>* nullentry = nullptr;
-
-      auto topentry = top_.load(memory_order_acquire);
-
-      do
-      {
-         while (topentry == maxptr_)
-            topentry = top_.load(memory_order_acquire);
-      } 
-      while (!top_.compare_exchange_weak(topentry, maxptr_,
-      memory_order_acq_rel, memory_order_acquire));
-
-      if (topentry != nullptr)
-         topentry->next_.store(newentry, memory_order_release);
-
-      bottom_.compare_exchange_strong(nullentry, newentry,
-         memory_order_acq_rel, memory_order_acquire);
-
-      count_.fetch_add(1, memory_order_acq_rel);
-      top_.store(newentry, memory_order_release);
-   }
-
-   virtual void clear()
-   {
-      //pop as long as possible
-      try
-      {
-         while (1)
-            pop_front(false);
-      }
-      catch (IsEmpty&)
-      {
-      }
-
-      exceptPtr_ = nullptr;
-   }
-
-   size_t count(void) const
-   {
-      return count_.load(memory_order_acquire);
-   }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-template<typename T, typename U> class TransactionalMap
-{
-   //locked writes, lockless reads
-private:
-   mutable mutex mu_;
-   shared_ptr<map<T, U>> map_;
-   atomic<size_t> count_;
-
-public:
-
-   TransactionalMap(void)
-   {
-      count_.store(0, memory_order_relaxed);
-      map_ = make_shared<map<T, U>>();
-   }
-
-   void insert(pair<T, U>&& mv)
-   {
-      auto newMap = make_shared<map<T, U>>();
-
-      unique_lock<mutex> lock(mu_);
-      *newMap = *map_;
-
-      newMap->insert(move(mv));
-      map_ = newMap;
-      count_.store(map_->size(), memory_order_relaxed);
-   }
-
-   void insert(const pair<T, U>& obj)
-   {
-      auto newMap = make_shared<map<T, U>>();
-
-      unique_lock<mutex> lock(mu_);
-      *newMap = *map_;
-
-      newMap->insert(obj);
-      map_ = newMap;
-      count_.store(map_->size(), memory_order_relaxed);
-   }
-
-   void update(map<T, U> updatemap)
-   {
-      if (updatemap.size() == 0)
-         return;
-
-      auto newMap = make_shared<map<T, U>>( move(updatemap));
-
-      unique_lock<mutex> lock(mu_);
-      newMap->insert(map_->begin(), map_->end());
-
-      map_ = newMap;
-      count_.store(map_->size(), memory_order_relaxed);
-   }
-
-   void erase(const T& id)
-   {
-      unique_lock<mutex> lock(mu_);
-
-      auto iter = map_->find(id);
-      if (iter == map_->end())
-         return;
-
-      auto newMap = make_shared<map<T, U>>();
-      *newMap = *map_;
-
-      newMap->erase(id);
-      map_ = newMap;
-      count_.store(map_->size(), memory_order_relaxed);
-   }
-
-   void erase(const vector<T>& idVec)
-   {
-      if (idVec.size() == 0)
-         return;
-
-      auto newMap = make_shared<map<T, U>>();
-
-      unique_lock<mutex> lock(mu_);
-      *newMap = *map_;
-
-      bool erased = false;
-      for (auto& id : idVec)
-      {
-         if (newMap->erase(id) != 0)
-            erased = true;
-      }
-
-      if (erased)
-         map_ = newMap;
-
-      count_.store(map_->size(), memory_order_relaxed);
-   }
-
-   shared_ptr<map<T, U>> pop_all(void)
-   {
-      auto newMap = make_shared<map<T, U>>();
-      unique_lock<mutex> lock(mu_);
-      
-      auto retMap = map_;
-      map_ = newMap;
-      count_.store(map_->size(), memory_order_relaxed);
-
-      return retMap;
-   }
-
-   shared_ptr<map<T, U>> get(void) const
-   {
-      unique_lock<mutex> lock(mu_);
-      return map_;
-   }
-
-   void clear(void)
-   {
-      auto newMap = make_shared<map<T, U>>();
-      unique_lock<mutex> lock(mu_);
-
-      map_ = newMap;
-      count_.store(map_->size(), memory_order_relaxed);
-   }
-
-   size_t size(void) const
-   {
-      return count_.load(memory_order_relaxed);
-   }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-template<typename T> class TransactionalSet
-{
-   //locked writes, lockless reads
-private:
-   mutable mutex mu_;
-   shared_ptr<set<T>> set_;
-   atomic<size_t> count_;
-
-public:
-
-   TransactionalSet(void)
-   {
-      count_.store(0, memory_order_relaxed);
-      set_ = make_shared<set<T>>();
-   }
-
-   void insert(T&& mv)
-   {
-      auto newSet = make_shared<set<T>>();
-
-      unique_lock<mutex> lock(mu_);
-      *newSet = *set_;
-
-      newSet->insert(move(mv));
-      set_ = newSet;
-      count_.store(set_->size(), memory_order_relaxed);
-   }
-
-   void insert(const T& obj)
-   {
-      auto newSet = make_shared<set<T>>();
-
-      unique_lock<mutex> lock(mu_);
-      *newSet = *set_;
-
-      newSet->insert(obj);
-      set_ = newSet;
-      count_.store(set_->size(), memory_order_relaxed);
-   }
-
-   void insert(const set<T>& dataSet)
-   {
-      if (dataSet.size() == 0)
-         return;
-
-      auto newSet = make_shared<set<T>>();
-
-      unique_lock<mutex> lock(mu_);
-      *newSet = *set_;
-
-      newSet->insert(dataSet.begin(), dataSet.end());
-      set_ = newSet;
-      count_.store(set_->size(), memory_order_relaxed);
-   }
-
-   void erase(const T& id)
-   {
-      unique_lock<mutex> lock(mu_);
-      
-      auto iter = set_->find(id);
-      if (iter == set_->end())
-         return;
-
-      auto newSet = make_shared<set<T>>();
-      *newSet = *set_;
-
-      newSet->erase(id);
-      set_ = newSet;
-      count_.store(set_->size(), memory_order_relaxed);
-   }
-
-   void erase(const vector<T>& idVec)
-   {
-      if (idVec.size() == 0)
-         return;
-
-      auto newSet = make_shared<set<T>>();
-
-      unique_lock<mutex> lock(mu_);
-      *newSet = *set_;
-
-      bool erased = false;
-      for (auto& id : idVec)
-      {
-         if (newSet->erase(id) != 0)
-            erased = true;
-      }
-
-      if (erased)
-         set_ = newSet;
-      count_.store(set_->size(), memory_order_relaxed);
-   }
-
-   shared_ptr<set<T>> pop_all(void)
-   {
-      auto newSet = make_shared<set<T>>();
-      unique_lock<mutex> lock(mu_);
-
-      auto retSet = set_;
-      set_ = newSet;
-      count_.store(set_->size(), memory_order_relaxed);
-
-      return retSet;
-   }
-
-   shared_ptr<set<T>> get(void) const
-   {
-      unique_lock<mutex> lock(mu_);
-      return set_;
-   }
-
-   void clear(void)
-   {
-      auto newSet = make_shared<set<T>>();
-      unique_lock<mutex> lock(mu_);
-
-      set_ = newSet;
-      count_.store(set_->size(), memory_order_relaxed);
-   }
-
-   size_t size(void) const
-   {
-      return count_.load(memory_order_relaxed);
-   }
-};
-
-
-////////////////////////////////////////////////////////////////////////////////
-template <typename T> class TimedStack : public Stack<T>
-{
-   /***
-   get() blocks as long as the container is empty
-   ***/
-
-private:
-   atomic<int> waiting_;
-   atomic<bool> terminate_;
-
-public:
-   TimedStack() : Stack<T>()
-   {
-      terminate_.store(false, memory_order_relaxed);
-      waiting_.store(0, memory_order_relaxed);
-   }
-
-   T pop_front(chrono::milliseconds timeout = chrono::milliseconds(600000))
-   {
-      //block until timeout expires or data is available
-      //return data or throw IsEmpty or StackTimedOutException
-
-      waiting_.fetch_add(1, memory_order_relaxed);
-      try
-      {
-         while (1)
+            next_.store(nullptr, std::memory_order_relaxed);
+         }
+
+         AtomicEntry(T&& obj)  :
+            obj_(move(obj))
          {
-            auto terminate = terminate_.load(memory_order_relaxed);
+            next_.store(nullptr, std::memory_order_relaxed);
+         }
+
+         T get(void)
+         {
+         return std::move(obj_);
+         }
+      };
+
+      //////////////////////////////////////////////////////////////////////////
+      template <typename T> class AtomicEntry2
+      {
+      private:
+         T obj_;
+         std::atomic<int> count_;
+         std::atomic<int> pos_;
+
+      public:
+         std::atomic<AtomicEntry2<T>*> next_;
+
+      public:
+         AtomicEntry2(const T& obj) :
+            obj_(obj)
+         {
+            count_.store(0, std::memory_order_relaxed);
+            pos_.store(0, std::memory_order_relaxed);
+            next_.store(nullptr, std::memory_order_relaxed);
+         }
+
+         AtomicEntry2(T&& obj) :
+            obj_(move(obj))
+         {
+            count_.store(0, std::memory_order_relaxed);
+            pos_.store(0, std::memory_order_relaxed);
+            next_.store(nullptr, std::memory_order_relaxed);
+         }
+
+         T get(void)
+         {
+            return move(obj_);
+         }
+      };
+
+
+      //////////////////////////////////////////////////////////////////////////
+      template<typename T> class Pile
+      {
+         /***
+         lockless LIFO container class
+         ***/
+      private:
+         std::atomic<AtomicEntry<T>*> top_;
+         AtomicEntry<T>* maxptr_;
+
+         std::atomic<size_t> count_;
+
+      public:
+         Pile()
+         {
+            maxptr_ = (AtomicEntry<T>*)SIZE_MAX;
+            top_.store(nullptr, std::memory_order_relaxed);
+            count_.store(0, std::memory_order_relaxed);
+         }
+
+         ~Pile()
+         {
+            clear();
+         }
+
+         void push_back(const T& obj)
+         {
+            AtomicEntry<T>* nextentry = new AtomicEntry<T>(obj);
+            nextentry->next_.store(maxptr_, std::memory_order_release);
+
+            auto topentry = top_.load(std::memory_order_acquire);
+            do
+            {
+               while (topentry == maxptr_)
+               topentry = top_.load(std::memory_order_acquire);
+            }
+            while (!top_.compare_exchange_weak(topentry, nextentry,
+               std::memory_order_release, std::memory_order_relaxed));
+
+            nextentry->next_.store(topentry, std::memory_order_release);
+
+            count_.fetch_add(1, std::memory_order_relaxed);
+         }
+
+         T pop_back(void)
+         {
+            AtomicEntry<T>* topentry = top_.load(std::memory_order_acquire);
+
+            do
+            {
+               //1: make sure the value we got out of top_ is not the marker 
+               //invalid value, otherwise keep load top_
+               while (topentry == maxptr_)
+               topentry = top_.load(std::memory_order_acquire);
+
+               //2: with a valid topentry, try to compare_exchange top_ for
+               //the invalid value
+            }
+            while (!top_.compare_exchange_weak(topentry, maxptr_,
+               std::memory_order_release, std::memory_order_relaxed));
+
+            //3: if topentry is empty, the container is emtpy, throw
+            if (topentry == nullptr)
+            {
+               //make sure the replace the marker value with nullptr in top_
+               top_.store(nullptr, std::memory_order_release);
+               throw IsEmpty();
+            }
+
+            /*4: if we got this far we guarantee 2 things:
+            - topentry is neither null nor the invalid marker
+            - topentry has yet to be derefenced in any thread, in other
+            words it is safe to read and delete in this particular thread
+            - top_ is set to the invalid marker so we have to set it
+            before other threads can get this far
+            */
+
+            while (topentry->next_.load(std::memory_order_acquire) == maxptr_);
+            top_.store(topentry->next_, std::memory_order_release);
+
+            auto&& retval = topentry->get();
+
+            count_.fetch_sub(1, std::memory_order_relaxed);
+
+            delete topentry;
+            return std::move(retval);
+         }
+
+         void clear(void)
+         {
+            try
+            {
+               while (1)
+               pop_back();
+            }
+            catch (IsEmpty&)
+            {}
+
+            count_.store(0, std::memory_order_relaxed);
+         }
+
+         size_t count(void) const
+         {
+            return count_.load(std::memory_order_relaxed);
+         }
+      };
+
+      //////////////////////////////////////////////////////////////////////////
+      template <typename T> class Queue_LockFree
+      {
+      private:
+         std::atomic<AtomicEntry2<T>*> head_;
+         std::atomic<AtomicEntry2<T>*> tail_;
+
+      protected:
+         std::atomic<int> count_;
+         std::exception_ptr exceptPtr_ = nullptr;
+
+      public:
+         Queue_LockFree()
+         {
+            head_.store(nullptr, std::memory_order_relaxed);
+            tail_.store(nullptr, std::memory_order_relaxed);
+            count_.store(0, std::memory_order_relaxed);
+         }
+
+         virtual T pop_front()
+         {
+            auto tailPtr = tail_.load();
+
+            while(true)
+            {
+               //compare exchange till tail_ is replaced with its next
+
+               if (tailPtr == nullptr)
+                  throw IsEmpty();
+
+               auto nextPtr = tailPtr->next_.load();
+               if (!tail_.compare_exchange_weak(tailPtr, nextPtr))
+                  continue;
+
+               if (nextPtr == nullptr)
+               {
+                  auto tailPtrCopy = tailPtr;
+                  if (!head_.compare_exchange_strong(tailPtrCopy, nullptr))
+                  {
+                     do
+                     {
+                        nextPtr = tailPtr->next_.load();
+                     } while (nextPtr == nullptr);
+
+                     tail_.store(nextPtr);
+                  }
+               }
+
+               auto val = tailPtr->get();
+               //delete tailPtr;
+
+               count_.fetch_sub(1);
+               return std::move(val);
+            }
+         }
+
+         virtual void push_back(T&& obj)
+         {
+            //create new atomic entry
+            AtomicEntry2<T>* newEntry = new AtomicEntry2<T>(std::move(obj));
+
+            auto current_head = head_.load();
+            while(true)
+            {
+               if (head_.compare_exchange_weak(current_head, newEntry))
+               {
+                  if(current_head != nullptr)
+                  {
+                     current_head->next_.store(newEntry);
+                  }
+                  else
+                  {
+                     tail_.store(newEntry);
+                  }
+               }
+               else
+               {
+                  continue;
+               }
+
+               count_.fetch_add(1);
+               return;
+            }
+         }
+
+         size_t count(void) const
+         {
+            return count_.load(std::memory_order_acquire);
+         }
+
+         virtual void clear()
+         {
+            count_.store(0, std::memory_order_relaxed);
+         }
+      };
+
+      //////////////////////////////////////////////////////////////////////////
+      template <typename T> class Queue
+      {
+      private:
+         std::mutex mu_;
+         std::deque<T> queue_;
+
+      protected:
+         std::atomic<size_t> count_;
+         std::exception_ptr exceptPtr_ = nullptr;
+
+      public:
+         Queue()
+         {
+            count_.store(0, std::memory_order_relaxed);
+         }
+
+         virtual T pop_front()
+         {
+            std::unique_lock<std::mutex> lock(mu_);
+            if (queue_.size() == 0)
+               throw IsEmpty();
+
+            T val = std::move(queue_.front());
+            queue_.pop_front();
+            count_.fetch_sub(1, std::memory_order_relaxed);
+            return val;
+         }
+
+         virtual void push_back(T&& obj)
+         {
+            std::unique_lock<std::mutex> lock(mu_);
+            queue_.push_back(std::move(obj));
+            count_.fetch_add(1, std::memory_order_relaxed);
+         }
+
+         size_t count(void) const
+         {
+            return count_.load(std::memory_order_acquire);
+         }
+
+         virtual void clear()
+         {
+            std::unique_lock<std::mutex> lock(mu_);
+            queue_.clear();
+            count_.store(0, std::memory_order_relaxed);
+         }
+      };
+
+      //////////////////////////////////////////////////////////////////////////
+      template <typename T> class BlockingQueue : public Queue<T>
+      {
+         /***
+         get() blocks as long as the container is empty
+
+         terminate() halts all operations and returns on all waiting threads
+         completed() lets the container serve it's remaining entries before
+         halting
+         ***/
+
+      private:
+         std::atomic<int> waiting_;
+         std::atomic<bool> terminated_;
+         std::atomic<bool> completed_;
+         std::mutex condVarMutex_;
+         std::condition_variable condVar_;
+
+         int flag_ = 0;
+
+      private:
+         void wait_on_data(void)
+         {
+            std::unique_lock<std::mutex> lock(condVarMutex_);
+
+            auto completed = completed_.load(std::memory_order_relaxed);
+            if (completed)
+            {
+               if (Queue<T>::exceptPtr_ != nullptr)
+                  std::rethrow_exception(Queue<T>::exceptPtr_);
+               else
+                  throw StopBlockingLoop();
+            }
+
+            if (flag_ > 0)
+               return;
+
+            condVar_.wait(lock);
+         }
+
+      public:
+         BlockingQueue() : Queue<T>()
+         {
+            terminated_.store(false, std::memory_order_relaxed);
+            completed_.store(false, std::memory_order_relaxed);
+            waiting_.store(0, std::memory_order_relaxed);
+         }
+
+         T pop_front(bool block = true)
+         {
+            //blocks as long as there is no data available in the chain.
+            //run in loop until we get data or a throw
+
+            waiting_.fetch_add(1, std::memory_order_relaxed);
+
+            try
+            {
+               while (1)
+               {
+                  auto terminate = terminated_.load(std::memory_order_acquire);
+                  if (terminate)
+                  {
+                     if (Queue<T>::exceptPtr_ != nullptr)
+                        std::rethrow_exception(Queue<T>::exceptPtr_);
+
+                     throw StopBlockingLoop();
+                  }
+
+                  //try to pop_front
+                  try
+                  {
+                     auto&& retval = Queue<T>::pop_front();
+                     waiting_.fetch_sub(1, std::memory_order_relaxed);
+
+                     std::unique_lock<std::mutex> lock(condVarMutex_);
+                     --flag_;
+
+                     return std::move(retval);
+                  }
+                  catch (IsEmpty& e)
+                  {
+                     if (block == false)
+                           throw e;
+                  }
+
+                  wait_on_data();
+               }
+            }
+            catch (...)
+            {
+               //loop stopped
+               waiting_.fetch_sub(1, std::memory_order_relaxed);
+               std::rethrow_exception(std::current_exception());
+            }
+
+            //to shut up the compiler warning
+            return T();
+         }
+
+         void push_back(T&& obj)
+         {
+            auto completed = completed_.load(std::memory_order_acquire);
+            if (completed)
+               return;
+
+            Queue<T>::push_back(std::move(obj));
+
+            {
+               std::unique_lock<std::mutex> lock(condVarMutex_);
+               ++flag_;
+               condVar_.notify_all();
+            }
+         }
+
+         void terminate(std::exception_ptr exceptptr = nullptr)
+         {
+            std::unique_lock<std::mutex> lock(condVarMutex_);
+            if (exceptptr == nullptr)
+               exceptptr = std::make_exception_ptr(StopBlockingLoop());
+
+            Queue<T>::exceptPtr_ = exceptptr;
+            terminated_.store(true, std::memory_order_release);
+            completed_.store(true, std::memory_order_release);
+
+            condVar_.notify_all();
+         }
+
+         void clear(void)
+         {
+            completed();
+
+            Queue<T>::clear();
+
+            terminated_.store(false, std::memory_order_relaxed);
+            completed_.store(false, std::memory_order_relaxed);
+         }
+
+         void completed(std::exception_ptr exceptptr = nullptr)
+         {      
+            if (exceptptr == nullptr)
+               exceptptr = std::make_exception_ptr(StopBlockingLoop());
+
+            Queue<T>::exceptPtr_ = exceptptr;
+            completed_.store(true, std::memory_order_release);
+
+            while (waiting_.load(std::memory_order_relaxed) > 0)
+               condVar_.notify_all();
+
+            std::unique_lock<std::mutex> lock(condVarMutex_);
+            flag_ = 0;
+         }
+
+         int waiting(void) const
+         {
+            return waiting_.load(std::memory_order_relaxed);
+         }
+      };
+
+      //////////////////////////////////////////////////////////////////////////
+      template <typename T> class TimedQueue : public Queue<T>
+      {
+         /***
+         get() blocks as long as the container is empty
+         ***/
+
+      private:
+         std::atomic<int> waiting_;
+         std::atomic<bool> terminate_;
+         std::mutex condVarMutex_;
+         std::condition_variable condVar_;
+
+         int flag_ = 0;
+
+      private:
+         std::cv_status wait_on_data(std::chrono::milliseconds timeout)
+         {
+            auto terminate = terminate_.load(std::memory_order_relaxed);
             if (terminate)
-               throw StopBlockingLoop();
+            {
+               if (Queue<T>::exceptPtr_ != nullptr)
+                  std::rethrow_exception(Queue<T>::exceptPtr_);
+               else
+                  throw StopBlockingLoop();
+            }
 
-            //try to pop_front
+            std::unique_lock<std::mutex> lock(condVarMutex_);
+            if (flag_ > 0)
+            {
+               --flag_;
+               return std::cv_status::no_timeout;
+            }
+
+            return condVar_.wait_for(lock, timeout);
+         }
+
+      public:
+         TimedQueue() : Queue<T>()
+         {
+            terminate_.store(false, std::memory_order_relaxed);
+            waiting_.store(0, std::memory_order_relaxed);
+         }
+
+         T pop_front(std::chrono::milliseconds timeout = std::chrono::milliseconds(600000))
+         {
+            //block until timeout expires or data is available
+            //return data or throw IsEmpty or StackTimedOutException
+
+            waiting_.fetch_add(1, std::memory_order_relaxed);
             try
             {
-               auto&& retval = Stack<T>::pop_front();
-               waiting_.fetch_sub(1, memory_order_relaxed);
-               return move(retval);
+               while (1)
+               {
+               auto terminate = terminate_.load(std::memory_order_relaxed);
+               if (terminate)
+                  throw StopBlockingLoop();
+
+               //try to pop_front
+               try
+               {
+                  auto&& retval = Queue<T>::pop_front();
+                  waiting_.fetch_sub(1, std::memory_order_relaxed);
+                  return std::move(retval);
+               }
+               catch (IsEmpty&)
+               {}
+
+               auto before = std::chrono::high_resolution_clock::now();
+               auto status = wait_on_data(timeout);
+
+               if (status == std::cv_status::timeout) //future timed out
+                  throw StackTimedOutException();
+
+               auto after = std::chrono::high_resolution_clock::now();
+               auto timediff = std::chrono::duration_cast<std::chrono::milliseconds>(after - before);
+               if (timediff <= timeout)
+                  timeout -= timediff;
+               else
+                  timeout = std::chrono::milliseconds(0);
+               }
             }
-            catch (IsEmpty&)
+            catch (...)
             {
+               //loop stopped unexpectedly
+               waiting_.fetch_sub(1, std::memory_order_relaxed);
+               std::rethrow_exception(std::current_exception());
             }
 
-            //if there are no items, create promise, push to promise pile
-            auto fut = Stack<T>::get_future();
+            return T();
+         }
 
-            //try to grab data one more time before waiting on future
+         std::vector<T> pop_all(std::chrono::seconds timeout = std::chrono::seconds(600))
+         {
+            std::vector<T> vecT;
+
+            vecT.push_back(std::move(pop_front(timeout)));
+
             try
             {
-               auto&& retval = Stack<T>::pop_front();
-               waiting_.fetch_sub(1, memory_order_relaxed);
-               return move(retval);
+               while (1)
+                  vecT.push_back(std::move(Queue<T>::pop_front()));
             }
             catch (IsEmpty&)
+            {}
+
+            return vecT;
+         }
+
+         void push_back(T&& obj)
+         {
+            Queue<T>::push_back(std::move(obj));
+
             {
+               std::unique_lock<std::mutex> lock(condVarMutex_);
+               ++flag_;
             }
 
-            //TODO: figure out time left if we break before the timeout
-            //but reenter the loop
+            condVar_.notify_all();
+         }
+
+
+         void terminate(std::exception_ptr exceptptr = nullptr)
+         {
+            if (exceptptr == nullptr)
+            {
+               try
+               {
+                  throw StopBlockingLoop();
+               }
+               catch (...)
+               {
+                  exceptptr = std::current_exception();
+               }
+            }
+
+            Queue<T>::exceptPtr_ = exceptptr;
+            terminate_.store(true, std::memory_order_release);
+
+            condVar_.notify_all();
+         }
+
+         void reset(void)
+         {
+            Queue<T>::clear();
+
+            terminate_.store(false, std::memory_order_relaxed);
+         }
+
+         bool isValid(void) const
+         {
+            auto val = terminate_.load(std::memory_order_relaxed);
+            return !val;
+         }
+
+         int waiting(void) const
+         {
+            return waiting_.load(std::memory_order_relaxed);
+         }
+      };
+
+      //////////////////////////////////////////////////////////////////////////
+      template<typename T, typename U> class TransactionalMap
+      {
+         /*
+         - locked writes, using a mutex for sequential updating
+         - lockless reads as long as atomic_...<shared_ptr> operations are
+           lockess on the target platform
+
+         memory order is not set explicity, it defaults to seq_cst
+         */
+
+      private:
+         mutable std::mutex mu_;
+         std::shared_ptr<std::map<T, U>> map_;
+         std::atomic<size_t> count_;
+
+      public:
+
+         TransactionalMap(void)
+         {
+            count_.store(0, std::memory_order_relaxed);
+            map_ = std::make_shared<std::map<T, U>>();
+         }
+
+         void insert(std::pair<T, U>&& mv)
+         {
+            auto newMap = std::make_shared<std::map<T, U>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newMap->insert(map_->begin(), map_->end());
+            newMap->insert(std::move(mv));
+
+            atomic_store(&map_, newMap);
+
+            count_.store(map_->size(), std::memory_order_relaxed);
+         }
+
+         void insert(const std::pair<T, U>& obj)
+         {
+            auto newMap = std::make_shared<std::map<T, U>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newMap->insert(map_->begin(), map_->end());
+            newMap->insert(obj);
             
-            auto before = chrono::high_resolution_clock::now();
-            auto status = fut.wait_for(timeout);
+            std::atomic_store(&map_, newMap);
 
-            if (status == future_status::timeout) //future timed out
-               throw StackTimedOutException();
-
-            auto after = chrono::high_resolution_clock::now();
-            auto timediff = chrono::duration_cast<chrono::milliseconds>(after - before);
-            if (timediff <= timeout)
-               timeout -= timediff;
-            else
-               timeout = chrono::milliseconds(0);
+            count_.store(map_->size(), std::memory_order_relaxed);
          }
-      }
-      catch (...)
-      {
-         //loop stopped unexpectedly
-         waiting_.fetch_sub(1, memory_order_relaxed);
-         rethrow_exception(current_exception());
-      }
 
-      return T();
-   }
-
-   vector<T> pop_all(chrono::seconds timeout = chrono::seconds(600))
-   {
-      vector<T> vecT;
-
-      vecT.push_back(move(pop_front(timeout)));
-      
-      try
-      {
-         while (1)
-            vecT.push_back(move(Stack<T>::pop_front()));
-      }
-      catch (IsEmpty&)
-      {}
-
-      return move(vecT);
-   }
-
-   void push_back(T&& obj)
-   {
-      Stack<T>::push_back(move(obj));
-
-      //pop promises
-      if (waiting_.load(memory_order_relaxed) > 0)
-         Stack<T>::pop_promise();
-   }
-
-   void terminate(exception_ptr exceptptr = nullptr)
-   {
-      if (exceptptr == nullptr)
-      {
-         try
+         void update(std::map<T, U> updatemap)
          {
-            throw(StopBlockingLoop());
+            if (updatemap.size() == 0)
+               return;
+
+            auto newMap = std::make_shared<std::map<T, U>>(std::move(updatemap));
+
+            std::unique_lock<std::mutex> lock(mu_);
+            for (auto& data_pair : *map_)
+               newMap->insert(data_pair);
+
+            std::atomic_store(&map_, newMap);
+
+            count_.store(map_->size(), std::memory_order_relaxed);
          }
-         catch (...)
+
+         void erase(const T& id)
          {
-            exceptptr = current_exception();
+            std::unique_lock<std::mutex> lock(mu_);
+
+            auto iter = map_->find(id);
+            if (iter == map_->end())
+               return;
+
+            auto newMap = std::make_shared<std::map<T, U>>();
+            newMap->insert(map_->begin(), map_->end());
+            newMap->erase(id);
+
+            std::atomic_store(&map_, newMap);
+
+            count_.store(map_->size(), std::memory_order_relaxed);
          }
-      }
 
-      Stack<T>::exceptPtr_ = exceptptr;
-
-      terminate_.store(true, memory_order_relaxed);
-      while (waiting_.load(memory_order_relaxed) > 0)
-         Stack<T>::pop_promise();
-   }
-
-   void reset(void)
-   {
-      Stack<T>::clear();
-
-      terminate_.store(false, memory_order_relaxed);
-   }
-
-   bool isValid(void) const
-   {
-      auto val = terminate_.load(memory_order_relaxed);
-      return !val;
-   }
-
-   int waiting(void) const
-   {
-      return waiting_.load(memory_order_relaxed);
-   }
-};
-
-////////////////////////////////////////////////////////////////////////////////
-template <typename T> class BlockingStack : public Stack<T>
-{
-   /***
-   get() blocks as long as the container is empty
-
-   terminate() halts all operations and returns on all waiting threads
-   completed() lets the container serve it's remaining entries before halting
-   ***/
-
-private:
-   atomic<int> waiting_;
-   atomic<bool> terminated_;
-   atomic<bool> completed_;
-   
-private:
-   shared_future<bool> get_future()
-   {
-      auto completed = completed_.load(memory_order_acquire);
-      if (completed)
-      {
-         if (Stack<T>::exceptPtr_ != nullptr)
-            rethrow_exception(Stack<T>::exceptPtr_);
-         else
-            throw StopBlockingLoop();
-      }
-
-      return move(Stack<T>::get_future());
-   }
-
-public:
-   BlockingStack() : Stack<T>()
-   {
-      terminated_.store(false, memory_order_relaxed);
-      completed_.store(false, memory_order_relaxed);
-      waiting_.store(0, memory_order_relaxed);
-   }
-
-   T pop_front(void)
-   {
-      //blocks as long as there is no data available in the chain.
-      //run in loop until we get data or a throw
-
-      waiting_.fetch_add(1, memory_order_acq_rel);
-
-      try
-      {
-         while (1)
+         void erase(const std::vector<T>& idVec)
          {
-            auto terminate = terminated_.load(memory_order_acquire);
-            if (terminate)
+            if (idVec.size() == 0)
+               return;
+
+            auto newMap = std::make_shared<std::map<T, U>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newMap->insert(map_->begin(), map_->end());
+
+            bool erased = false;
+            for (auto& id : idVec)
             {
-               if (Stack<T>::exceptPtr_ != nullptr)
-                  rethrow_exception(Stack<T>::exceptPtr_);
-
-               throw StopBlockingLoop();
+               if (newMap->erase(id) != 0)
+                  erased = true;
             }
 
-            //try to pop_front
-            try
-            {
-               auto&& retval = Stack<T>::pop_front(false);
-               waiting_.fetch_sub(1, memory_order_acq_rel);
-               return move(retval);
-            }
-            catch (IsEmpty&)
-            {}
+            if (erased)
+               std::atomic_store(&map_, newMap);
 
-            //if there are no items, create promise, push to promise pile
-            auto fut = get_future();
-
-            try
-            {
-               auto&& retval = Stack<T>::pop_front(false);
-               waiting_.fetch_sub(1, memory_order_acq_rel);
-               return move(retval);
-            }
-            catch (IsEmpty&)
-            {
-               if(completed_.load(memory_order_acquire) || 
-                  terminated_.load(memory_order_acquire))
-	            throw StopBlockingLoop();
-            }
-
-            try
-            {
-               fut.get();
-            }
-            catch (future_error&)
-            {}
+            count_.store(map_->size(), std::memory_order_relaxed);
          }
-      }
-      catch (...)
+
+         void erase(const std::deque<T>& idVec)
+         {
+            if (idVec.size() == 0)
+               return;
+
+            auto newMap = std::make_shared<std::map<T, U>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newMap->insert(map_->begin(), map_->end());
+
+            bool erased = false;
+            for (auto& id : idVec)
+            {
+               if (newMap->erase(id) != 0)
+                  erased = true;
+            }
+
+            if (erased)
+               std::atomic_store(&map_, newMap);
+
+            count_.store(map_->size(), std::memory_order_relaxed);
+         }
+
+         std::shared_ptr<std::map<T, U>> pop_all(void)
+         {
+            auto newMap = std::make_shared<std::map<T, U>>();
+            std::unique_lock<std::mutex> lock(mu_);
+
+            auto retMap = atomic_load(&map_);
+            std::atomic_store(&map_, newMap);
+
+            count_.store(map_->size(), std::memory_order_relaxed);
+            return retMap;
+         }
+
+         std::shared_ptr<const std::map<T, U>> get(void) const
+         {
+            auto retMap = std::atomic_load(&map_);
+            auto retConstMap = 
+               std::static_pointer_cast<const std::map<T, U>>(retMap);
+            return retConstMap;
+         }
+
+         void clear(void)
+         {
+            auto newMap = std::make_shared<std::map<T, U>>();
+            std::unique_lock<std::mutex> lock(mu_);
+
+            std::atomic_store(&map_, newMap);
+
+            count_.store(0, std::memory_order_relaxed);
+         }
+
+         size_t size(void) const
+         {
+            return count_.load(std::memory_order_relaxed);
+         }
+      };
+
+      //////////////////////////////////////////////////////////////////////////
+      template<typename T> class TransactionalSet
       {
-         //loop stopped
-         waiting_.fetch_sub(1, memory_order_acq_rel);
-         rethrow_exception(current_exception());
-      }
+         /*
+         - locked writes, using a mutex for sequential updating
+         - lockless reads as long as atomic_...<shared_ptr> operations are
+           lockess on the target platform
 
-      //to shut up the compiler warning
-      return T();
-   }
+         memory order is not set explicity, it defaults to seq_cst
+         */
 
-   void push_back(T&& obj)
-   {
-      auto completed = completed_.load(memory_order_acquire);
-      if (completed)
-         return;
+      private:
+         mutable std::mutex mu_;
+         std::shared_ptr<std::set<T>> set_;
+         std::atomic<size_t> count_;
 
-      Stack<T>::push_back(move(obj));
-      Stack<T>::pop_promise();
-   }
+      public:
 
-   void terminate(exception_ptr exceptptr = nullptr)
-   {
-      if (exceptptr == nullptr)
-      {
-         try
+         TransactionalSet(void)
          {
-            throw StopBlockingLoop();
+            count_.store(0, std::memory_order_relaxed);
+            set_ = std::make_shared<std::set<T>>();
          }
-         catch (...)
+
+         void insert(T&& mv)
          {
-            exceptptr = current_exception();
+            auto newSet = std::make_shared<std::set<T>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newSet->insert(set_->begin(), set_->end());
+            newSet->insert(move(mv));
+
+            std::atomic_store(&set_, newSet);
+            count_.store(set_->size(), std::memory_order_relaxed);
          }
-      }
 
-      Stack<T>::exceptPtr_ = exceptptr;
-      terminated_.store(true, memory_order_release);
-      completed_.store(true, memory_order_release);
-
-      //while (waiting_.load(memory_order_acquire) > 0)
-         Stack<T>::pop_promise();
-   }
-
-   void clear(void)
-   {
-      completed();
-
-      Stack<T>::clear();
-
-      terminated_.store(false, memory_order_relaxed);
-      completed_.store(false, memory_order_relaxed);
-   }
-
-   void completed(exception_ptr exceptptr = nullptr)
-   {
-      if (exceptptr == nullptr)
-      {
-         try
+         void insert(const T& obj)
          {
-            throw StopBlockingLoop();
+            auto newSet = std::make_shared<std::set<T>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newSet->insert(set_->begin(), set_->end());
+            newSet->insert(obj);
+
+            std::atomic_store(&set_, newSet);
+            count_.store(set_->size(), std::memory_order_relaxed);
          }
-         catch (...)
+
+         void insert(const std::set<T>& dataSet)
          {
-            exceptptr = current_exception();
+            if (dataSet.size() == 0)
+               return;
+
+            auto newSet = std::make_shared<std::set<T>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newSet->insert(set_->begin(), set_->end());
+            newSet->insert(dataSet.begin(), dataSet.end());
+
+            atomic_store(&set_, newSet);
+            count_.store(set_->size(), std::memory_order_relaxed);
          }
-      }
 
-      Stack<T>::exceptPtr_ = exceptptr;
-      completed_.store(true, memory_order_release);
+         void erase(const T& id)
+         {
+            std::unique_lock<std::mutex> lock(mu_);
 
-      //while (waiting_.load(memory_order_acquire) > 0)
-         Stack<T>::pop_promise();
-   }
+            auto iter = set_->find(id);
+            if (iter == set_->end())
+               return;
 
-   int waiting(void) const
-   {
-      return waiting_.load(memory_order_relaxed);
-   }
-};
+            auto newSet = std::make_shared<std::set<T>>();
+            newSet->insert(set_->begin(), set_->end());
+            newSet->erase(id);
 
+            std::atomic_store(&set_, newSet);
+            count_.store(set_->size(), std::memory_order_relaxed);
+         }
 
+         void erase(const std::vector<T>& idVec)
+         {
+            if (idVec.size() == 0)
+               return;
+
+            auto newSet = std::make_shared<std::set<T>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newSet->insert(set_->begin(), set_->end());
+
+            bool erased = false;
+            for (auto& id : idVec)
+            {
+               if (newSet->erase(id) != 0)
+               erased = true;
+            }
+
+            if (erased)
+               std::atomic_store(&set_, newSet);
+
+            count_.store(set_->size(), std::memory_order_relaxed);
+         }
+
+         void erase(const std::deque<T>& idVec)
+         {
+            if (idVec.size() == 0)
+               return;
+
+            auto newSet = std::make_shared<std::set<T>>();
+
+            std::unique_lock<std::mutex> lock(mu_);
+            newSet->insert(set_->begin(), set_->end());
+
+            bool erased = false;
+            for (auto& id : idVec)
+            {
+               if (newSet->erase(id) != 0)
+                  erased = true;
+            }
+
+            if (erased)
+               std::atomic_store(&set_, newSet);
+
+            count_.store(set_->size(), std::memory_order_relaxed);
+         }
+
+         std::shared_ptr<std::set<T>> pop_all(void)
+         {
+            auto newSet = std::make_shared<std::set<T>>();
+            std::unique_lock<std::mutex> lock(mu_);
+
+            auto retSet = std::atomic_load(&set_);
+            std::atomic_store(&set_, newSet);
+            count_.store(set_->size(), std::memory_order_relaxed);
+
+            return retSet;
+         }
+
+         std::shared_ptr<std::set<T>> get(void) const
+         {
+            auto retSet = std::atomic_load(&set_);
+            return retSet;
+         }
+
+         void clear(void)
+         {
+            auto newSet = std::make_shared<std::set<T>>();
+            std::unique_lock<std::mutex> lock(mu_);
+
+            std::atomic_store(&set_, newSet);
+            count_.store(0, std::memory_order_relaxed);
+         }
+
+         size_t size(void) const
+         {
+            return count_.load(std::memory_order_relaxed);
+         }
+      };
+   }; //namespace Threading
+}; //namespace Armory
 
 #endif

@@ -1,3 +1,4 @@
+*.bak
 *.swp
 *.pyc
 *~
@@ -7,6 +8,11 @@
 *.la
 *.qm
 *.in
+*.obj
+*.tlog
+*.lob
+*.idb
+*.pdb
 
 *libtool.m4
 *ltoptions.m4
@@ -33,18 +39,28 @@
 *.libs
 *autom4te.cache
 
+Makefile
 config.h
 stamp-h1
 .dirstamp
 1
+.vs
+client_cookie
 
 Makefile
 ArmoryDB
+BIP150KeyManager
 /armoryengine/ArmoryBuild.py
+
+/cppForSwig/BIP150KeyManager
 
 CppBlockUtils.py
 _CppBlockUtils.*
 /cppForSwig/CppBlockUtils_wrap.cxx
+
+/cppForSwig/chacha20poly1305/chacha20poly1305bench
+/cppForSwig/chacha20poly1305/chacha20poly1305tests
+
 /cppForSwig/libcryptopp.a
 /cppForSwig/libleveldb.a
 /cppForSwig/cryptopp/*.a
@@ -57,10 +73,16 @@ _CppBlockUtils.*
 /cppForSwig/cryptopp/DLL_Debug
 /cppForSwig/cryptopp/dlltest___Win32_Debug
 /cppForSwig/cryptopp/Release
+/cppForSwig/cryptopp/Makefile
 
+/cppForSwig/fcgi/fcgi_config.h
+/cppForSwig/fcgi/examples/*
+
+/cppForSwig/gtest/BIP151RekeyTest
 /cppForSwig/gtest/ContainerTests
 /cppForSwig/gtest/CppBlockUtilsTests
-/cppForSwig/gtest/*.txt
+/cppForSwig/gtest/SupernodeTests
+/cppForSwig/gtest/WalletTests
 /cppForSwig/gtest/*.a
 /cppForSwig/gtest/*.out.*
 /cppForSwig/gtest/blkfiletest/*
@@ -68,6 +90,15 @@ _CppBlockUtils.*
 /cppForSwig/gtest/*.dSYM
 /cppForSwig/gtest/*.lmdb*
 /cppForSwig/gtest/DB1kIterTest
+/cppForSwig/gtest/SignerTests
+/cppForSwig/gtest/fakehomedir/*
+
+/cppForSwig/libbtc/bitcoin-spv
+
+!/cppForSwig/ccan/config.h
+/cppForSwig/ccan/**/*.d
+/cppForSwig/ccan/**/Info
+/cppForSwig/ccan/**/Info.plist
 
 *.DS_Store
 
@@ -79,6 +110,8 @@ _CppBlockUtils.*
 /cppForSwig/swigwin/*
 /cppForSwig/pypaths.txt
 /cppForSwig/output.txt
+/cppForSwig/Makefile
+/cppForSwig/lmdb/Makefile
 
 /pytest/*.bin
 /pytest/mytxfile
@@ -95,10 +128,11 @@ _CppBlockUtils.*
 /*.wallet
 
 /findpass.py
-/*.txt
 /sandbox.py
 
 /lang/*.qm
+
+test-driver
 
 /webshop/orders/m*
 /webshop/orders/n*
@@ -140,4 +174,13 @@ _CppBlockUtils.*
 /cppForSwig/guardian/x64*
 /cppForSwig/x64*
 /cppForSwig/LMDB_Win/x64*
+/cppForSwig/protobuf/*.pb.*
 /cppForSwig/x64/*.*
+CppBridge
+armoryengine/BridgeProto_pb2.py
+cppForSwig/gtest/UtilsTests
+cppForSwig/gtest/ZeroConfTests
+c20p1305_cffi/c20p1305.c
+c20p1305_cffi/c20p1305.cpython-39-x86_64-linux-gnu.so
+
+/build

@@ -5,18 +5,18 @@
 //  See LICENSE-ATI or http://www.gnu.org/licenses/agpl.html                  //
 //                                                                            //
 //                                                                            //
-//  Copyright (C) 2016, goatpig                                               //            
+//  Copyright (C) 2016-2021, goatpig                                          //
 //  Distributed under the MIT license                                         //
-//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //                                   
+//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 #ifndef _BTCWALLET_H
 #define _BTCWALLET_H
 
 #include "BinaryData.h"
-#include "BlockObj.h"
+#include "BlockchainDatabase/BlockObj.h"
+#include "BlockchainDatabase/StoredBlockObj.h"
 #include "ScrAddrObj.h"
-#include "StoredBlockObj.h"
 #include "bdmenums.h"
 #include "ThreadSafeClasses.h"
 #include "TxClasses.h"
@@ -28,6 +28,7 @@ struct ScanWalletStruct
 {
    BDV_Action action_;
    
+   unsigned prevTopBlockHeight_;
    unsigned startBlock_;
    unsigned endBlock_ = UINT32_MAX;
    bool reorg_ = false;
@@ -43,12 +44,12 @@ struct ScanWalletStruct
 class BtcWallet
 {
    friend class WalletGroup;
+   friend class BDV_Server_Object;
 
    static const uint32_t MIN_UTXO_PER_TXN = 100;
 
 public:
-
-   BtcWallet(BlockDataViewer* bdv, BinaryData ID)
+   BtcWallet(BlockDataViewer* bdv, const std::string ID)
       : bdvPtr_(bdv), walletID_(ID)
    {}
 
@@ -59,21 +60,9 @@ public:
 
    /////////////////////////////////////////////////////////////////////////////
    // addScrAddr when blockchain rescan req'd, addNewScrAddr for just-created
-   void addScrAddress(const BinaryData& addr);
-   void removeAddressBulk(vector<BinaryData> const & scrAddrBulk);
-
-   bool hasScrAddress(BinaryData const & scrAddr) const;
-
-
-   // Scan a Tx for our TxIns/TxOuts.  Override default blk vals if you think
-   // you will save time by not checking addresses that are much newer than
-   // the block
-
-   void scanNonStdTx(uint32_t    blknum, 
-                     uint32_t    txidx, 
-                     Tx &        txref,
-                     uint32_t    txoutidx,
-                     ScrAddrObj& addr);
+   void removeAddressBulk(const std::vector<BinaryDataRef>&);
+   bool hasScrAddress(const BinaryDataRef&) const;
+   std::set<BinaryDataRef> getAddrSet(void) const;
 
    // BlkNum is necessary for "unconfirmed" list, since it is dependent
    // on number of confirmations.  But for "spendable" TxOut list, it is
@@ -81,72 +70,66 @@ public:
    // the Utxos in the list.  If you don't care (i.e. you only want to 
    // know what TxOuts are available to spend, you can pass in 0 for currBlk
    uint64_t getFullBalance(void) const;
-   uint64_t getFullBalanceFromDB(void) const;
+   uint64_t getFullBalanceFromDB(unsigned) const;
    uint64_t getSpendableBalance(uint32_t currBlk) const;
    uint64_t getUnconfirmedBalance(uint32_t currBlk) const;
 
-   map<BinaryData, uint32_t> getAddrTxnCounts(int32_t updateID) const;
-   map<BinaryData, tuple<uint64_t, uint64_t, uint64_t>> 
+   std::map<BinaryData, uint32_t> getAddrTxnCounts(int32_t updateID) const;
+   std::map<BinaryData, std::tuple<uint64_t, uint64_t, uint64_t>>
       getAddrBalances(int32_t updateID, unsigned blockheight) const;
 
    uint64_t getWltTotalTxnCount(void) const;
 
    void prepareTxOutHistory(uint64_t val);
-   void prepareFullTxOutHistory(bool ignoreZC);
-   vector<UnspentTxOut> getSpendableTxOutListForValue(uint64_t val = UINT64_MAX);
-   vector<UnspentTxOut> getSpendableTxOutListZC(void);
-   vector<UnspentTxOut> getRBFTxOutList(void);
+   void prepareFullTxOutHistory(void);
+   std::vector<UTXO> getSpendableTxOutListForValue(uint64_t val = UINT64_MAX);
+   std::vector<UTXO> getSpendableTxOutListZC(void);
+   std::vector<UTXO> getRBFTxOutList(void);
 
-   vector<LedgerEntry>
-      getTxLedger(BinaryData const &scrAddr) const;
-   vector<LedgerEntry>
-      getTxLedger(void) const;
-
-   void pprintLedger() const;
-   void pprintAlot(LMDBBlockDatabase *db, uint32_t topBlk=0, bool withAddr=false) const;
-   void pprintAlittle(std::ostream &os) const;
-   
    void clearBlkData(void);
    
-   vector<AddressBookEntry> createAddressBook(void);
+   std::vector<AddressBookEntry> createAddressBook(void);
 
    void reset(void);
    
    const ScrAddrObj* getScrAddrObjByKey(const BinaryData& key) const;
    ScrAddrObj& getScrAddrObjRef(const BinaryData& key);
 
-   const LedgerEntry& getLedgerEntryForTx(const BinaryData& txHash) const;
+   void setWalletID(const std::string &wltId) { walletID_ = wltId; }
+   const std::string& walletID() const { return walletID_; }
 
-   void setWalletID(BinaryData const & wltId) { walletID_ = wltId; }
-   const BinaryData& walletID() const { return walletID_; }
-
-   const map<BinaryData, LedgerEntry>& getHistoryPage(uint32_t);
-   vector<LedgerEntry> getHistoryPageAsVector(uint32_t);
+   std::shared_ptr<const std::map<BinaryData, LedgerEntry>> getHistoryPage(uint32_t);
+   std::vector<LedgerEntry> getHistoryPageAsVector(uint32_t);
    size_t getHistoryPageCount(void) const { return histPages_.getPageCount(); }
 
    void needsRefresh(bool refresh);
    bool hasBdvPtr(void) const { return bdvPtr_ != nullptr; }
 
-   void setRegistrationCallback(function<void(void)> lbd)
+   void setRegistrationCallback(std::function<void(void)> lbd)
    {
       doneRegisteringCallback_ = lbd;
    }
 
-private:   
-   
+   void setConfTarget(unsigned, const std::string&);
+
+   std::shared_ptr<const std::map<BinaryDataRef, std::shared_ptr<ScrAddrObj>>>
+      getAddrMap(void) const { return scrAddrMap_.get(); }
+   void unregisterAddresses(const std::set<BinaryDataRef>&);
+
+private:
    //returns true on bootstrap and new block, false on ZC
    bool scanWallet(ScanWalletStruct&, int32_t);
 
    //wallet side reorg processing
-   void updateAfterReorg(uint32_t lastValidBlockHeight);
-   void scanWalletZeroConf(const ScanWalletStruct&, int32_t);
+   //void updateAfterReorg(uint32_t lastValidBlockHeight);
+   std::map<BinaryData, TxIOPair> scanWalletZeroConf(
+      const ScanWalletStruct&, int32_t);
 
    void setRegistered(bool isTrue = true) { isRegistered_ = isTrue; }
 
-   void updateWalletLedgersFromTxio(map<BinaryData, LedgerEntry>& le,
-      const map<BinaryData, TxIOPair>& txioMap,
-      uint32_t startBlock, uint32_t endBlock,
-      bool purge = false) const;
+   std::map<BinaryData, LedgerEntry> updateWalletLedgersFromTxio(
+      const std::map<BinaryData, TxIOPair>& txioMap,
+      uint32_t startBlock, uint32_t endBlock) const;
 
    void mapPages(void);
    bool isPaged(void) const;
@@ -154,12 +137,13 @@ private:
    BlockDataViewer* getBdvPtr(void) const
    { return bdvPtr_; }
 
-   map<uint32_t, uint32_t> computeScrAddrMapHistSummary(void);
-   const map<uint32_t, uint32_t>& getSSHSummary(void) const
+   std::map<uint32_t, uint32_t> computeScrAddrMapHistSummary(void);
+   std::map<uint32_t, uint32_t> computeScrAddrMapHistSummary_Super(void);
+
+   const std::map<uint32_t, uint32_t>& getSSHSummary(void) const
    { return histPages_.getSSHsummary(); }
 
-   void getTxioForRange(uint32_t, uint32_t, 
-      map<BinaryData, TxIOPair>&) const;
+   std::map<BinaryData, TxIOPair> getTxioForRange(uint32_t, uint32_t) const;
    void unregister(void) { isRegistered_ = false; }
    void resetTxOutHistory(void);
    void resetCounters(void);
@@ -167,18 +151,17 @@ private:
 private:
 
    BlockDataViewer* const        bdvPtr_;
-   TransactionalMap<BinaryData, shared_ptr<ScrAddrObj>> scrAddrMap_;
+   Armory::Threading::TransactionalMap<
+      BinaryDataRef, std::shared_ptr<ScrAddrObj>> scrAddrMap_;
    
-   bool                          ignoreLastScanned_=true;
-   map<BinaryData, LedgerEntry>* ledgerAllAddr_ = &LedgerEntry::EmptyLedgerMap_;
-                                 
-   bool                          isRegistered_=false;
+   bool ignoreLastScanned_ = true;
+   bool isRegistered_ = false;
    
    //manages history pages
    HistoryPager                  histPages_;
 
    //wallet id
-   BinaryData                    walletID_;
+   std::string walletID_;
 
    uint64_t                      balance_ = 0;
 
@@ -187,12 +170,12 @@ private:
 
    //call this lambda once a wallet is done registering and scanning 
    //for the first time
-   function<void(void)> doneRegisteringCallback_ = [](void)->void{};
-
-   set<BinaryData> validZcKeys_;
+   std::function<void(void)> doneRegisteringCallback_ = [](void)->void{};
 
    mutable int lastPulledCountsID_ = -1;
    mutable int lastPulledBalancesID_ = -1;
+   int32_t updateID_ = 0;
+   unsigned confTarget_ = MIN_CONFIRMATIONS;
 };
 
 #endif

@@ -4,15 +4,22 @@
 //  Distributed under the GNU Affero General Public License (AGPL v3)         //
 //  See LICENSE-ATI or http://www.gnu.org/licenses/agpl.html                  //
 //                                                                            //
+//                                                                            //
+//  Copyright (C) 2016-2021, goatpig                                          //
+//  Distributed under the MIT license                                         //
+//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //
+//                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 #ifndef _LEDGER_ENTRY_H
 #define _LEDGER_ENTRY_H
 
 #include "BinaryData.h"
 #include "BtcUtils.h"
-#include "BlockObj.h"
-#include "Blockchain.h"
-#include "StoredBlockObj.h"
+#include "BlockchainDatabase/BlockObj.h"
+#include "BlockchainDatabase/Blockchain.h"
+#include "BlockchainDatabase/StoredBlockObj.h"
+#include "BDVCodec.h"
+#include "ZeroConf.h"
 
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -61,7 +68,6 @@ class LedgerEntry
 {
 public:
    LedgerEntry(void) :
-      ID_(0),
       value_(0),
       blockNum_(UINT32_MAX),
       txHash_(BtcUtils::EmptyHash_),
@@ -73,7 +79,7 @@ public:
       isOptInRBF_(false),
       usesWitness_(false) {}
 
-   LedgerEntry(BinaryData const & ID,
+   LedgerEntry(const std::string & ID,
                int64_t val, 
                uint32_t blkNum, 
                BinaryData const & txhash, 
@@ -98,8 +104,7 @@ public:
       usesWitness_(usesWitness),
       isChainedZC_(isChainedZC) {}
 
-   BinaryData const &  getScrAddr(void) const;
-   string              getWalletID(void) const;
+   std::string         getWalletID(void) const;
    int64_t             getValue(void) const     { return value_;         }
    uint32_t            getBlockNum(void) const  { return blockNum_;      }
    BinaryData const &  getTxHash(void) const    { return txHash_;        }
@@ -114,8 +119,7 @@ public:
 
    SCRIPT_PREFIX getScriptType(void) const {return (SCRIPT_PREFIX)ID_[0];}
 
-   void setScrAddr(BinaryData const & bd);
-   void setWalletID(BinaryData const & bd);
+   void setWalletID(const std::string& bd);
    void changeBlkNum(uint32_t newHgt) {blockNum_ = newHgt; }
       
    bool operator<(LedgerEntry const & le2) const;
@@ -125,34 +129,34 @@ public:
    void pprint(void);
    void pprintOneLine(void) const;
 
-   static void purgeLedgerMapFromHeight(map<BinaryData, LedgerEntry>& leMap,
+   static void purgeLedgerMapFromHeight(std::map<BinaryData, LedgerEntry>& leMap,
                                         uint32_t purgeFrom);
-   static void purgeLedgerVectorFromHeight(vector<LedgerEntry>& leMap,
+   static void purgeLedgerVectorFromHeight(std::vector<LedgerEntry>& leMap,
       uint32_t purgeFrom);
 
-   static void computeLedgerMap(map<BinaryData, LedgerEntry> &leMap,
-                                const map<BinaryData, TxIOPair>& txioMap,
+   static std::map<BinaryData, LedgerEntry> computeLedgerMap(
+                                const std::map<BinaryData, TxIOPair>& txioMap,
                                 uint32_t startBlock, uint32_t endBlock,
-                                const BinaryData& ID,
+                                const std::string& ID,
                                 const LMDBBlockDatabase* db,
                                 const Blockchain* bc,
-                                bool purge);
+                                const ZeroConfContainer* zc);
    
-   set<BinaryData> getScrAddrList(void) const
+   const std::set<BinaryData>& getScrAddrList(void) const
    { return scrAddrSet_; }
+
+   void fillMessage(::Codec_LedgerEntry::LedgerEntry* msg) const;
    
 public:
 
    static LedgerEntry EmptyLedger_;
-   static map<BinaryData, LedgerEntry> EmptyLedgerMap_;
-   static BinaryData ZCheader_;
+   static std::map<BinaryData, LedgerEntry> EmptyLedgerMap_;
    static BinaryData EmptyID_;
 
 private:
    
    //holds either a scrAddr or a walletId
-   BinaryData       ID_;
-
+   std::string      ID_;
    int64_t          value_;
    uint32_t         blockNum_;
    BinaryData       txHash_;
@@ -166,7 +170,7 @@ private:
    bool             isChainedZC_ = false;
 
    //for matching scrAddr comments to LedgerEntries on the Python side
-   set<BinaryData> scrAddrSet_;
+   std::set<BinaryData> scrAddrSet_;
 }; 
 
 struct LedgerEntry_DescendingOrder
@@ -180,7 +184,7 @@ class LedgerDelegate
    friend class BlockDataViewer;
 
 public:
-   vector<LedgerEntry> getHistoryPage(uint32_t id)
+   std::vector<LedgerEntry> getHistoryPage(uint32_t id)
    {
       return getHistoryPage_(id);
    }
@@ -195,20 +199,28 @@ public:
       return getPageIdForBlockHeight_(blk);
    }
 
+   uint32_t getPageCount(void)
+   {
+      return getPageCount_();
+   }
+
 private:
    LedgerDelegate(
-      function<vector<LedgerEntry>(uint32_t)> getHist,
-      function<uint32_t(uint32_t)> getBlock,
-      function<uint32_t(uint32_t)> getPageId) :
+      std::function<std::vector<LedgerEntry>(uint32_t)> getHist,
+      std::function<uint32_t(uint32_t)> getBlock,
+      std::function<uint32_t(uint32_t)> getPageId,
+      std::function<uint32_t(void)> getPageCount) :
       getHistoryPage_(getHist),
       getBlockInVicinity_(getBlock),
-      getPageIdForBlockHeight_(getPageId)
+      getPageIdForBlockHeight_(getPageId),
+      getPageCount_(getPageCount)
    {}
 
 private:
-   const function<vector<LedgerEntry>(uint32_t)> getHistoryPage_;
-   const function<uint32_t(uint32_t)>            getBlockInVicinity_;
-   const function<uint32_t(uint32_t)>            getPageIdForBlockHeight_;
+   const std::function<std::vector<LedgerEntry>(uint32_t)> getHistoryPage_;
+   const std::function<uint32_t(uint32_t)>            getBlockInVicinity_;
+   const std::function<uint32_t(uint32_t)>            getPageIdForBlockHeight_;
+   const std::function<uint32_t(void)>                getPageCount_;
 };
 
 #endif

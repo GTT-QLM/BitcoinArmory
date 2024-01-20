@@ -1,8 +1,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
-//  Copyright (C) 2016, goatpig.                                              //
+//  Copyright (C) 2016-2021, goatpig.                                         //
 //  Distributed under the MIT license                                         //
-//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //                                      
+//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //
 //                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -16,16 +16,17 @@
 #include <future>
 
 #include "BitcoinP2p.h"
-#include "./fcgi/include/fcgiapp.h"
-#include "./fcgi/include/fcgios.h"
-
 #include "BlockDataViewer.h"
-#include "DataObject.h"
-#include "BDM_seder.h"
 #include "EncryptionUtils.h"
 #include "LedgerEntry.h"
 #include "DbHeader.h"
-#include "FcgiMessage.h"
+#include "BDV_Notification.h"
+#include "BDVCodec.h"
+#include "ZeroConf.h"
+#include "Server.h"
+#include "BtcWallet.h"
+#include "ArmoryErrors.h"
+#include "ZeroConfNotifications.h"
 
 #define MAX_CONTENT_LENGTH 1024*1024*1024
 #define CALLBACK_EXPIRE_COUNT 5
@@ -36,243 +37,242 @@ enum WalletType
    TypeLockbox
 };
 
+enum BDVCommandProcessingResultType
+{
+   BDVCommandProcess_Success,
+   BDVCommandProcess_Failure,
+   BDVCommandProcess_Static,
+   BDVCommandProcess_ZC_P2P,
+   BDVCommandProcess_ZC_RPC,
+   BDVCommandProcess_UnregisterAddresses,
+   BDVCommandProcess_PayloadNotReady
+};
+
+class BDV_Server_Object;
+
+namespace DBTestUtils
+{
+   std::tuple<std::shared_ptr<::Codec_BDVCommand::BDVCallback>, unsigned> waitOnSignal(
+      Clients*, const std::string&, ::Codec_BDVCommand::NotificationType);
+}
+
 ///////////////////////////////////////////////////////////////////////////////
-class SocketCallback : public Callback
+struct RpcBroadcastPacket
+{
+   std::shared_ptr<BDV_Server_Object> bdvPtr_;
+   std::shared_ptr<BinaryData> rawTx_;
+   std::string requestID_;
+   
+   std::map<std::string, std::shared_ptr<BDV_Server_Object>> extraRequestors_;
+};
+
+///////////////////////////////////////////////////////////////////////////////
+struct BDV_Payload
+{
+   BinaryData packetData_;
+   std::shared_ptr<BDV_Server_Object> bdvPtr_;
+   uint32_t messageID_;
+   uint64_t bdvID_;
+};
+
+///////////////////////////////////////////////////////////////////////////////
+struct BDV_PartialMessage
+{
+   std::vector<std::shared_ptr<BDV_Payload>> payloads_;
+   WebSocketMessagePartial partialMessage_;
+
+   bool parsePacket(std::shared_ptr<BDV_Payload>);
+   bool isReady(void) const { return partialMessage_.isReady(); }
+   bool getMessage(std::shared_ptr<::google::protobuf::Message>);
+   void reset(void);
+   size_t topId(void) const;
+
+   static unsigned getMessageId(std::shared_ptr<BDV_Payload>);
+};
+
+///////////////////////////////////////////////////////////////////////////////
+class Callback
+{
+public:
+
+   virtual ~Callback() = 0;
+
+   virtual void callback(std::shared_ptr<::Codec_BDVCommand::BDVCallback>) = 0;
+   virtual bool isValid(void) = 0;
+   virtual void shutdown(void) = 0;
+};
+
+///////////////////////////////////////////////////////////////////////////////
+class WS_Callback : public Callback
 {
 private:
-   mutex mu_;
-   atomic<unsigned> count_;
-
-   function<unsigned(void)> isReady_;
+   const uint64_t bdvID_;
 
 public:
-   SocketCallback(function<unsigned(void)> isReady) :
-      Callback(), isReady_(isReady)
-   {
-      count_.store(0, memory_order_relaxed);
-   }
+   WS_Callback(const uint64_t& bdvid) :
+      bdvID_(bdvid)
+   {}
 
-   void emit(void);
-   Arguments respond(const string&);
+   void callback(std::shared_ptr<::Codec_BDVCommand::BDVCallback>);
+   bool isValid(void) { return true; }
+   void shutdown(void) {}
+};
 
-   bool isValid(void)
-   {
-      unique_lock<mutex> lock(mu_, defer_lock);
+///////////////////////////////////////////////////////////////////////////////
+class UnitTest_Callback : public Callback
+{
+private:
+   Armory::Threading::BlockingQueue<
+      std::shared_ptr<::Codec_BDVCommand::BDVCallback>> notifQueue_;
 
-      if (lock.try_lock())
-      {
-         auto count = count_.fetch_add(1, memory_order_relaxed) + 1;
-         if (count >= CALLBACK_EXPIRE_COUNT)
-            return false;
-      }
+public:
+   void callback(std::shared_ptr<::Codec_BDVCommand::BDVCallback>);
+   bool isValid(void) { return true; }
+   void shutdown(void) {}
 
-      return true;
-   }
-
-   ~SocketCallback(void)
-   {
-      Callback::shutdown();
-
-      //after signaling shutdown, grab the mutex to make sure 
-      //all responders threads have terminated
-      unique_lock<mutex> lock(mu_);
-   }
-
-   void resetCounter(void)
-   {
-      count_.store(0, memory_order_relaxed);
-   }
+   std::shared_ptr<::Codec_BDVCommand::BDVCallback> getNotification(void);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 class BDV_Server_Object : public BlockDataViewer
 {
    friend class Clients;
+   friend std::tuple<std::shared_ptr<::Codec_BDVCommand::BDVCallback>, unsigned>
+      DBTestUtils::waitOnSignal(
+      Clients*, const std::string&, ::Codec_BDVCommand::NotificationType);
 
-private:
-   map<string, function<Arguments(
-      const vector<string>&, Arguments&)>> methodMap_;
-   
-   thread tID_, initT_;
-   shared_ptr<SocketCallback> cb_;
+private: 
+   std::atomic<unsigned> started_;
+   std::thread initT_;
+   std::unique_ptr<Callback> cb_;
 
-   string bdvID_;
+   std::string bdvID_;
    BlockDataManagerThread* bdmT_;
 
-   map<string, LedgerDelegate> delegateMap_;
+   std::map<std::string, LedgerDelegate> delegateMap_;
 
    struct walletRegStruct
    {
-      vector<BinaryData> scrAddrVec;
-      string IDstr;
-      bool isNew;
+      std::shared_ptr<::Codec_BDVCommand::BDVCommand> command_;
       WalletType type_;
    };
 
-   mutex registerWalletMutex_;
-   map<string, walletRegStruct> wltRegMap_;
+   std::mutex registerWalletMutex_;
+   std::mutex processPacketMutex_;
+   std::map<std::string, walletRegStruct> wltRegMap_;
 
-   shared_ptr<promise<bool>> isReadyPromise_;
-   shared_future<bool> isReadyFuture_;
+   std::shared_ptr<std::promise<bool>> isReadyPromise_;
+   std::shared_future<bool> isReadyFuture_;
 
-public:
+   std::function<void(std::unique_ptr<BDV_Notification>)> notifLambda_;
+   std::atomic<unsigned> packetProcess_threadLock_;
+   std::atomic<unsigned> notificationProcess_threadLock_;
 
-   BlockingStack<shared_ptr<BDV_Notification>> notificationStack_;
+   std::map<unsigned, BDV_PartialMessage> messageMap_;
 
 private:
    BDV_Server_Object(BDV_Server_Object&) = delete; //no copies
-   
-   void registerCallback();
-   
-   void buildMethodMap(void);
+      
+   BDVCommandProcessingResultType processCommand(
+      std::shared_ptr<::Codec_BDVCommand::BDVCommand>,
+      std::shared_ptr<::google::protobuf::Message>&);
    void startThreads(void);
 
-   bool registerWallet(
-      vector<BinaryData> const& scrAddrVec, string IDstr, bool wltIsNew);
-   bool registerLockbox(
-      vector<BinaryData> const& scrAddrVec, string IDstr, bool wltIsNew);
-   void registerAddrVec(const string&, vector<BinaryData> const& scrAddrVec);
+   void registerWallet(std::shared_ptr<::Codec_BDVCommand::BDVCommand>);
+   void registerLockbox(std::shared_ptr<::Codec_BDVCommand::BDVCommand>);
+   void populateWallets(std::map<std::string, walletRegStruct>&);
+   void setup(void);
 
-   void pushNotification(unique_ptr<BDV_Notification> notifPtr)
-   {
-      notificationStack_.push_back(move(notifPtr));
-   }
+   void flagRefresh(
+      BDV_refresh refresh, const BinaryData& refreshId,
+      std::unique_ptr<BDV_Notification_ZC> zcPtr);
 
-   void resetCounter(void) const
-   {
-      if (cb_ != nullptr)
-         cb_->resetCounter();
-   }
+   unsigned lastValidMessageId_ = 0;
 
 public:
-   BDV_Server_Object(BlockDataManagerThread *bdmT);
+   BDV_Server_Object(const std::string& id, BlockDataManagerThread *bdmT);
+
    ~BDV_Server_Object(void) 
    { 
       haltThreads(); 
    }
 
-   const string& getID(void) const { return bdvID_; }
-   void maintenanceThread(void);
+   const std::string& getID(void) const { return bdvID_; }
+   void processNotification(std::shared_ptr<BDV_Notification>);
    void init(void);
-
-   Arguments executeCommand(const string& method, 
-                              const vector<string>& ids, 
-                              Arguments& args);
-  
-   void zcCallback(
-      map<BinaryData, shared_ptr<map<BinaryData, TxIOPair>>> zcMap);
-   void progressCallback(BDMPhase phase, double progress,
-      unsigned time, unsigned numericProgress);
-   void zcErrorCallback(string&, string&);
-
    void haltThreads(void);
+   BDVCommandProcessingResultType processPayload(std::shared_ptr<BDV_Payload>&,
+      std::shared_ptr<::google::protobuf::Message>&);
 };
 
 ///////////////////////////////////////////////////////////////////////////////
 class Clients
 {
-private:
-   TransactionalMap<string, shared_ptr<BDV_Server_Object>> BDVs_;
-   mutable BlockingStack<bool> gcCommands_;
-   BlockDataManagerThread* bdmT_;
-
-   function<void(void)> fcgiShutdownCallback_;
-
-   atomic<bool> run_;
-
-   thread mainteThr_;
-   thread gcThread_;
+   friend class ZeroConfCallbacks_BDV;
 
 private:
-   void maintenanceThread(void) const;
-   void garbageCollectorThread(void);
+   Armory::Threading::TransactionalMap<std::string, std::shared_ptr<BDV_Server_Object>> BDVs_;
+   mutable Armory::Threading::BlockingQueue<bool> gcCommands_;
+   BlockDataManagerThread* bdmT_ = nullptr;
+
+   std::function<void(void)> shutdownCallback_;
+
+   std::atomic<bool> run_;
+
+   std::vector<std::thread> controlThreads_;
+   std::thread unregThread_;
+
+   mutable Armory::Threading::BlockingQueue<std::shared_ptr<BDV_Notification>> outerBDVNotifStack_;
+   Armory::Threading::BlockingQueue<std::shared_ptr<BDV_Notification_Packet>> innerBDVNotifStack_;
+   Armory::Threading::BlockingQueue<std::shared_ptr<BDV_Payload>> packetQueue_;
+   Armory::Threading::BlockingQueue<std::string> unregBDVQueue_;
+   Armory::Threading::BlockingQueue<RpcBroadcastPacket> rpcBroadcastQueue_;
+
+   std::mutex shutdownMutex_;
+
+private:
+   void notificationThread(void) const;
    void unregisterAllBDVs(void);
+   void bdvMaintenanceLoop(void);
+   void bdvMaintenanceThread(void);
+   void messageParserThread(void);
+   void unregisterBDVThread(void);
+
+   void broadcastThroughRPC(void);
 
 public:
+   Clients(void)
+   {}
 
    Clients(BlockDataManagerThread* bdmT,
-      function<void(void)> shutdownLambda) :
-      bdmT_(bdmT), fcgiShutdownCallback_(shutdownLambda)
+      std::function<void(void)> shutdownLambda)
    {
-      run_.store(true, memory_order_relaxed);
-
-      auto mainthread = [this](void)->void
-      {
-         maintenanceThread();
-      };
-
-      auto gcThread = [this](void)->void
-      {
-         garbageCollectorThread();
-      };
-
-      mainteThr_ = thread(mainthread);
-
-      //no gc for unit tests
-      if (bdmT_->bdm()->config().nodeType_ == Node_UnitTest)
-         return;
-
-      gcThread_ = thread(gcThread);
+      init(bdmT, shutdownLambda);
    }
 
-   const shared_ptr<BDV_Server_Object>& get(const string& id) const;
-   Arguments runCommand(const string& cmd);
-   Arguments processShutdownCommand(Command&);
-   Arguments registerBDV(Arguments& arg);
-   void unregisterBDV(const string& bdvId);
+   void init(BlockDataManagerThread* bdmT,
+      std::function<void(void)> shutdownLambda);
+
+   std::shared_ptr<BDV_Server_Object> get(const std::string& id) const;
+   
+   void processShutdownCommand(
+      std::shared_ptr<::Codec_BDVCommand::StaticCommand>);
+   std::shared_ptr<::google::protobuf::Message> registerBDV(
+      std::shared_ptr<::Codec_BDVCommand::StaticCommand>, std::string bdvID);
+   void unregisterBDV(std::string bdvId);
    void shutdown(void);
    void exitRequestLoop(void);
-};
-
-///////////////////////////////////////////////////////////////////////////////
-class FCGI_Server
-{
-   /***
-   Figure if it should use a socket or a named pipe.
-   Force it to listen only to localhost if we use a socket 
-   (both in *nix and win32 code files)
-   ***/
-
-private:
-   SOCKET sockfd_ = -1;
-   mutex mu_;
-   int run_ = true;
-   atomic<uint32_t> liveThreads_;
-
-   const string port_;
-   const string ip_;
-
-   Clients clients_;
-
-private:
-   function<void(void)> getShutdownCallback(void)
-   {
-      auto shutdownCallback = [this](void)->void
-      {
-         this->haltFcgiLoop();
-      };
-
-      return shutdownCallback;
+   
+   void queuePayload(std::shared_ptr<BDV_Payload>& payload)
+   {  
+      packetQueue_.push_back(move(payload));
    }
 
-public:
-   FCGI_Server(BlockDataManagerThread* bdmT, string port, bool listen_all) :
-      clients_(bdmT, getShutdownCallback()),
-      ip_(listen_all ? "" : "127.0.0.1"), port_(port)
-   {
-      LOGINFO << "Listening on port " << port;
-      if (listen_all)
-         LOGWARN << "Listening to all incoming connections";
+   std::shared_ptr<::google::protobuf::Message> processUnregisteredCommand(
+      const uint64_t& bdvId, std::shared_ptr<::Codec_BDVCommand::StaticCommand>);
 
-      liveThreads_.store(0, memory_order_relaxed);
-   }
-
-   void init(void);
-   void enterLoop(void);
-   void processRequest(FCGX_Request* req);
-   void haltFcgiLoop(void);
-   void shutdown(void) { clients_.shutdown(); }
-   void checkSocket(void) const;
+   std::shared_ptr<::google::protobuf::Message> processCommand(
+      std::shared_ptr<BDV_Payload>);
 };
 
 #endif

@@ -1,24 +1,24 @@
-################################################################################
-#
-# Copyright (C) 2011-2015, Armory Technologies, Inc.
-# Distributed under the GNU Affero General Public License (AGPL v3)
-# See LICENSE or http://www.gnu.org/licenses/agpl.html
-#
-################################################################################
-#
-# Project:    Armory
-# Author:     Alan Reiner
-# Website:    www.bitcoinarmory.com
-# Orig Date:  20 November, 2011
-#
-################################################################################
+from __future__ import (absolute_import, division,
+                        print_function, unicode_literals)
+##############################################################################
+#                                                                            #
+# Copyright (C) 2011-2015, Armory Technologies, Inc.                         #
+# Distributed under the GNU Affero General Public License (AGPL v3)          #
+# See LICENSE or http://www.gnu.org/licenses/agpl.html                       #
+#                                                                            #
+# Copyright (C) 2016-2023, goatpig                                           #
+#  Distributed under the MIT license                                         #
+#  See LICENSE-MIT or https://opensource.org/licenses/MIT                    #
+#                                                                            #
+##############################################################################
+
 import ast
+import codecs
 from datetime import datetime
-from email.MIMEMultipart import MIMEMultipart
-from email.MIMEBase import MIMEBase
-from email.MIMEText import MIMEText
-from email.Utils import COMMASPACE, formatdate
-from email import Encoders
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email.utils import COMMASPACE, formatdate
 import hashlib
 import inspect
 import locale
@@ -32,8 +32,6 @@ import random
 import signal
 import smtplib
 from struct import pack, unpack
-from itertools import izip
-#from subprocess import PIPE
 import sys
 import threading
 import time
@@ -42,11 +40,7 @@ import shutil
 import base64
 import socket
 import subprocess
-
-#from psutil import Popen
-import psutil
-
-from CppBlockUtils import KdfRomix, CryptoAES, ConfigFile_fleshOutArgs, AddressType_P2SH_P2WPKH
+import binascii
 
 try:
    if os.path.exists('update_version.py') and os.path.exists('.git'):
@@ -55,21 +49,22 @@ except:
    pass
 
 try:
-   from ArmoryBuild import BTCARMORY_BUILD
+   from armoryengine.ArmoryBuild import BTCARMORY_BUILD
 except:
    BTCARMORY_BUILD = None
    
 #pass sys.argv to the cpp config file parser, get the fleshed out verison 
 #in return
-sys.argv = ConfigFile_fleshOutArgs("armoryqt.conf", sys.argv)
+
+####TODO: flesh out args with content of config file
 
 DEFAULT = 'DEFAULT'
 LEVELDB_BLKDATA = 'leveldb_blkdata'
 LEVELDB_HEADERS = 'leveldb_headers'
 
 # Version Numbers
-BTCARMORY_VERSION    = (0, 96,  5, 0)  # (Major, Minor, Bugfix, AutoIncrement)
-PYBTCWALLET_VERSION  = (1, 35,  0, 0)  # (Major, Minor, Bugfix, AutoIncrement)
+BTCARMORY_VERSION    = (0, 96, 99, 0)  # (Major, Minor, Bugfix, AutoIncrement)
+PYBTCWALLET_VERSION  = (1, 99,  0, 0)  # (Major, Minor, Bugfix, AutoIncrement)
 
 # ARMORY_DONATION_ADDR = '1ArmoryXcfq7TnCSuZa9fQjRYwJ4bkRKfv'
 # ARMORY_DONATION_PUBKEY = ( '04'
@@ -109,6 +104,8 @@ parser.add_option("--logfile",         dest="logFile",     default=DEFAULT, type
 parser.add_option("--mtdebug",         dest="mtdebug",     default=False,     action="store_true", help="Log multi-threaded call sequences")
 parser.add_option("--skip-online-check",dest="forceOnline", default=False,   action="store_true", help="Go into online mode, even if internet connection isn't detected")
 parser.add_option("--tor",             dest="useTorSettings", default=False, action="store_true", help="Enable common settings for when Armory connects through Tor")
+parser.add_option("--bip150",          dest="bip150Used",  default=False,     action="store_true", help="Enable BIP 150 and BIP 151 support")
+parser.add_option("--bip151",          dest="bip151Used",  default=False,     action="store_true", help="Enable BIP 151 support")
 parser.add_option("--keypool",         dest="keypool",     default=100, type="int",                help="Default number of addresses to lookahead in Armory wallets")
 parser.add_option("--redownload",      dest="redownload",  default=False,     action="store_true", help="Delete Bitcoin Core/bitcoind databases; redownload")
 parser.add_option("--rebuild",         dest="rebuild",     default=False,     action="store_true", help="Rebuild blockchain database and rescan")
@@ -125,13 +122,11 @@ parser.add_option("--disable-detsign", dest="enableDetSign", action="store_false
 parser.add_option("--enable-detsign", dest="enableDetSign", action="store_true", help="Enable Transaction Deterministic Signing (RFC 6979) - Enabled by default")
 parser.add_option("--armorydb-ip", dest="armorydb_ip", default=ARMORYDB_DEFAULT_IP, type="str", help="Set remote DB IP (default: 127.0.0.1)")
 parser.add_option("--armorydb-port", dest="armorydb_port", default=ARMORYDB_DEFAULT_PORT, type="str", help="Set remote DB port (default: 9001)")
-parser.add_option("--force-fcgi", dest="force_fcgi", default=False, action="store_true", help="Force the use of fcgi sockets when pointing to a custom DB IP")
 parser.add_option("--ram-usage", dest="ram_usage", default=-1, type="int", help="Set maximum ram during scans, as 128MB increments. Defaults to 4")
 parser.add_option("--thread-count", dest="thread_count", default=-1, type="int", help="Set max thread count during builds and scans. Defaults to CPU total thread count")
 parser.add_option("--db-type", dest="db_type", default="DB_FULL", type="str", help="Set db mode, defaults to DB_FULL")
 parser.add_option("--language", dest="language", default="en", type="str", help="""Set the language for the client to display in. Use the ISO 639-1 language code to choose a language. 
                                                                                  Options are da, de, en, es, el, fr, he, hr, id, ru, sv. Default is en. """)
-parser.add_option("--force-enable-segwit", dest="force_segwit", default=False, action="store_true", help="Allow SegWit address generation in offline mode")
 
 parser.set_defaults(enableDetSign=True)
 
@@ -152,20 +147,20 @@ parser.add_option("--coverage_output_dir", dest="coverageOutputDir", default=Non
 parser.add_option("--coverage_include", dest="coverageInclude", default=None, type="str", help="Unit Test Argument - Do not consume")
 
 # Some useful constants to be used throughout everything
-BASE58CHARS  = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 BASE16CHARS  = '0123456789abcdefABCDEF'
+BASE16CHARS_NOCAPS = '0123456789abcdef'
 LITTLEENDIAN  = '<'
 BIGENDIAN     = '>'
 NETWORKENDIAN = '!'
-ONE_BTC       = long(100000000)
-DONATION       = long(5000000)
-CENT          = long(1000000)
+ONE_BTC       = int(100000000)
+DONATION       = int(5000000)
+CENT          = int(1000000)
 UNINITIALIZED = None
 UNKNOWN       = -2
 MIN_TX_FEE    = 20000
 MIN_RELAY_TX_FEE = 20000
 MIN_FEE_BYTE = 200
-MT_WAIT_TIMEOUT_SEC = 20;
+MT_WAIT_TIMEOUT_SEC = 20
 DEFAULT_FEE_TYPE = "Auto" 
 DEFAULT_CHANGE_TYPE = 'P2PKH'
 DEFAULT_RECEIVE_TYPE = 'P2PKH'
@@ -217,7 +212,6 @@ FORMAT_SYMBOLS = [ \
 
 
 class UnserializeError(Exception): pass
-class BadAddressError(Exception): pass
 class VerifyScriptError(Exception): pass
 class FileExistsError(Exception): pass
 class ECDSA_Error(Exception): pass
@@ -249,14 +243,8 @@ class ShouldNotGetHereError(Exception): pass
 class BadInputError(Exception): pass
 class UstxError(Exception): pass
 class P2SHNotSupportedError(Exception): pass
-class NonBase58CharacterError(Exception): pass
 class isMSWallet(Exception): pass
 class SignerException(Exception): pass
-
-# Witness variables and constants
-NODE_WITNESS = 1 << 3
-WITNESS_MARKER = 0
-WITNESS_FLAG = 1
 
 if getattr(sys, 'frozen', False):
    sys.argv = [arg.decode('utf8') for arg in sys.argv]
@@ -268,8 +256,8 @@ CLI_ARGS = None
 
 # This is probably an abuse of the CLI_OPTIONS structure, but not
 # automatically expanding "~" symbols is killing me
-for opt,val in CLI_OPTIONS.__dict__.iteritems():
-   if not isinstance(val, basestring) or not val.startswith('~'):
+for opt,val in CLI_OPTIONS.__dict__.items():
+   if not isinstance(val, (str, bytes)) or not val.startswith('~'):
       continue
 
    if os.path.exists(os.path.expanduser(val)):
@@ -295,13 +283,8 @@ if CLI_OPTIONS.interport < 0:
 # all zero-conf UTXOs as unspendable, including sent-to-self (change)
 IGNOREZC  = CLI_OPTIONS.ignoreAllZC
 
-FORCE_SEGWIT = False
-if CLI_OPTIONS.offline:
-   FORCE_SEGWIT = CLI_OPTIONS.force_segwit
-
 #db address
 ARMORYDB_IP = CLI_OPTIONS.armorydb_ip
-FORCE_FCGI = CLI_OPTIONS.force_fcgi
 
 usesDefaultDbPort = True
 ARMORYDB_PORT = CLI_OPTIONS.armorydb_port
@@ -319,14 +302,12 @@ ENABLE_DETSIGN = CLI_OPTIONS.enableDetSign
 # Figure out the default directories for Satoshi client, and BicoinArmory
 OS_NAME          = ''
 OS_VARIANT       = ''
-USER_HOME_DIR    = ''   
+USER_HOME_DIR    = ''  
 BTC_HOME_DIR     = ''
 ARMORY_HOME_DIR  = ''
 ARMORY_DB_DIR    = ''
+DEFAULT_ADDR_TYPE= ''
 SUBDIR = 'testnet3' if USE_TESTNET else '' + 'regtest' if USE_REGTEST else ''
-
-#settingsObject = SettingsFile(CLI_OPTIONS.settingsPath)
-
 
 if not CLI_OPTIONS.satoshiHome==DEFAULT:
    BTC_HOME_DIR = CLI_OPTIONS.satoshiHome
@@ -346,20 +327,21 @@ if OS_WINDOWS:
       BTC_HOME_DIR = os.path.join(USER_HOME_DIR, 'Bitcoin')
    if SUBDIR != '':
       BTC_HOME_DIR = os.path.join(BTC_HOME_DIR, SUBDIR)
-   
+
    ARMORY_HOME_DIR = os.path.join(USER_HOME_DIR, 'Armory', SUBDIR)
    BLKFILE_DIR     = os.path.join(BTC_HOME_DIR, 'blocks')
    BLKFILE_1stFILE = os.path.join(BLKFILE_DIR, 'blk00000.dat')
 elif OS_LINUX:
+   import distro
    OS_NAME         = 'Linux'
-   OS_VARIANT      = platform.linux_distribution()
+   OS_VARIANT      = distro.linux_distribution()
    USER_HOME_DIR   = os.getenv('HOME')
-   
+
    if BTC_HOME_DIR == '':
       BTC_HOME_DIR = os.path.join(USER_HOME_DIR, '.bitcoin')
    if SUBDIR != '':
       BTC_HOME_DIR = os.path.join(BTC_HOME_DIR, SUBDIR)
-   
+
    ARMORY_HOME_DIR = os.path.join(USER_HOME_DIR, '.armory', SUBDIR)
    BLKFILE_DIR     = os.path.join(BTC_HOME_DIR, 'blocks')
    BLKFILE_1stFILE = os.path.join(BLKFILE_DIR, 'blk00000.dat')
@@ -368,32 +350,32 @@ elif OS_MACOSX:
    OS_NAME         = 'MacOSX'
    OS_VARIANT      = platform.mac_ver()
    USER_HOME_DIR   = os.path.expanduser('~/Library/Application Support')
-    
+
    if BTC_HOME_DIR == '':
       BTC_HOME_DIR = os.path.join(USER_HOME_DIR, 'Bitcoin')
    if SUBDIR != '':
-      BTC_HOME_DIR = os.path.join(BTC_HOME_DIR, SUBDIR)   
-   
+      BTC_HOME_DIR = os.path.join(BTC_HOME_DIR, SUBDIR)
+
    ARMORY_HOME_DIR = os.path.join(USER_HOME_DIR, 'Armory', SUBDIR)
    BLKFILE_DIR     = os.path.join(BTC_HOME_DIR, 'blocks')
    BLKFILE_1stFILE = os.path.join(BLKFILE_DIR, 'blk00000.dat')
 else:
-   print '***Unknown operating system!'
-   print '***Cannot determine default directory locations'
+   print('***Unknown operating system!')
+   print('***Cannot determine default directory locations')
 
 BLOCKCHAINS = {}
-BLOCKCHAINS['\xf9\xbe\xb4\xd9'] = "Main Network"
-BLOCKCHAINS['\xfa\xbf\xb5\xda'] = "Regression Test Network"
-BLOCKCHAINS['\x0b\x11\x09\x07'] = "Test Network (testnet3)"
+BLOCKCHAINS[b'\xf9\xbe\xb4\xd9'] = "Main Network"
+BLOCKCHAINS[b'\xfa\xbf\xb5\xda'] = "Regression Test Network"
+BLOCKCHAINS[b'\x0b\x11\x09\x07'] = "Test Network (testnet3)"
 
 NETWORKS = {}
-NETWORKS['\x00'] = "Main Network"
-NETWORKS['\x05'] = "Main Network"
-NETWORKS['\x6f'] = "Test Network"
-NETWORKS['\xc4'] = "Test Network"
-NETWORKS['\x6f'] = "Regtest Network"
-NETWORKS['\xc4'] = "Regtest Network"
-NETWORKS['\x34'] = "Namecoin Network"
+NETWORKS[b'\x00'] = "Main Network"
+NETWORKS[b'\x05'] = "Main Network"
+NETWORKS[b'\x6f'] = "Test Network"
+NETWORKS[b'\xc4'] = "Test Network"
+NETWORKS[b'\x6f'] = "Regtest Network"
+NETWORKS[b'\xc4'] = "Regtest Network"
+NETWORKS[b'\x34'] = "Namecoin Network"
 
 # We disable wallet checks on ARM for the sake of resources (unless forced)
 DO_WALLET_CHECK = CLI_OPTIONS.forceWalletCheck or \
@@ -494,7 +476,7 @@ MULTISIG_FILE   = os.path.join(ARMORY_HOME_DIR, MULTISIG_FILE_NAME)
 
 if not CLI_OPTIONS.multisigFile==DEFAULT:
    if not os.path.exists(CLI_OPTIONS.multisigFile):
-      print 'Multisig file "%s" does not exist!' % CLI_OPTIONS.multisigFile
+      print('Multisig file "%s" does not exist!' % CLI_OPTIONS.multisigFile)
    else:
       MULTISIG_FILE  = CLI_OPTIONS.multisigFile
 
@@ -509,39 +491,31 @@ if not os.path.exists(ARMORY_DB_DIR):
    os.makedirs(ARMORY_DB_DIR)
 
 ##### MAIN NETWORK IS DEFAULT #####
-from CppBlockUtils import BlockDataManagerConfig
-bdmConfig = BlockDataManagerConfig()
-
-BECH32_PREFIX = "tb" #default to testnet
-
 if not USE_TESTNET and not USE_REGTEST:
    # TODO:  The testnet genesis tx hash can't be the same...?
    BITCOIN_PORT = 8333
    BITCOIN_RPC_PORT = 8332
    ARMORY_RPC_PORT = 8225
-   MAGIC_BYTES = '\xf9\xbe\xb4\xd9'
+   MAGIC_BYTES = b'\xf9\xbe\xb4\xd9'
    GENESIS_BLOCK_HASH_HEX  = '6fe28c0ab6f1b372c1a6a246ae63f74f931e8365e15a089c68d6190000000000'
    GENESIS_BLOCK_HASH      = 'o\xe2\x8c\n\xb6\xf1\xb3r\xc1\xa6\xa2F\xaec\xf7O\x93\x1e\x83e\xe1Z\x08\x9ch\xd6\x19\x00\x00\x00\x00\x00'
    GENESIS_TX_HASH_HEX     = '3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a'
    GENESIS_TX_HASH         = ';\xa3\xed\xfdz{\x12\xb2z\xc7,>gv\x8fa\x7f\xc8\x1b\xc3\x88\x8aQ2:\x9f\xb8\xaaK\x1e^J'
-   ADDRBYTE = '\x00'
-   P2SHBYTE = '\x05'
-   PRIVKEYBYTE = '\x80'
+   ADDRBYTE = b'\x00'
+   P2SHBYTE = b'\x05'
+   PRIVKEYBYTE = b'\x80'
    BECH32_PREFIX = "bc"
 
    # This will usually just be used in the GUI to make links for the user
    BLOCKEXPLORE_NAME     = 'blockstream.info'
    BLOCKEXPLORE_URL_TX   = 'https://blockstream.info/tx/%s'
    BLOCKEXPLORE_URL_ADDR = 'https://blockstream.info/address/%s'
-else:
-   #set static members of BDMconfig for address generation on C++ side
-   bdmConfig.selectNetwork("Test")
-   
+else:   
    BITCOIN_PORT = 18444 if USE_REGTEST else 18333
    BITCOIN_RPC_PORT = 18443 if USE_REGTEST else 18332
    ARMORY_RPC_PORT     = 18225
    if USE_TESTNET:
-      MAGIC_BYTES  = '\x0b\x11\x09\x07'
+      MAGIC_BYTES  = b'\x0b\x11\x09\x07'
       GENESIS_BLOCK_HASH_HEX  = '43497fd7f826957108f4a30fd9cec3aeba79972084e90ead01ea330900000000'
       GENESIS_BLOCK_HASH      = 'CI\x7f\xd7\xf8&\x95q\x08\xf4\xa3\x0f\xd9\xce\xc3\xae\xbay\x97 \x84\xe9\x0e\xad\x01\xea3\t\x00\x00\x00\x00'
       GENESIS_TX_HASH_HEX     = '3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a'
@@ -551,7 +525,7 @@ else:
       if usesDefaultDbPort:
          ARMORYDB_PORT = "19001"
    else:
-      MAGIC_BYTES  = '\xfa\xbf\xb5\xda'
+      MAGIC_BYTES  = b'\xfa\xbf\xb5\xda'
       GENESIS_BLOCK_HASH_HEX  = '06226e46111a0b59caaf126043eb5bbf28c34f3a5e332a1fc7b2b73cf188910f'
       GENESIS_BLOCK_HASH      = '\x06\x22\x6e\x46\x11\x1a\x0b\x59\xca\xaf\x12\x60\x43\xeb\x5b\xbf\x28\xc3\x4f\x3a\x5e\x33\x2a\x1f\xc7\xb2\xb7\x3c\xf1\x88\x91\x0f'
       GENESIS_TX_HASH_HEX     = '3ba3edfd7a7b12b27ac72c3e67768f617fc81bc3888a51323a9fb8aa4b1e5e4a'
@@ -561,9 +535,9 @@ else:
       if usesDefaultDbPort:
          ARMORYDB_PORT = "19002"
 
-   ADDRBYTE = '\x6f'
-   P2SHBYTE = '\xc4'
-   PRIVKEYBYTE = '\xef'
+   ADDRBYTE = b'\x6f'
+   P2SHBYTE = b'\xc4'
+   PRIVKEYBYTE = b'\xef'
 
    #
    BLOCKEXPLORE_NAME     = 'blockexplorer.com' if USE_TESTNET else 'Fake regtest explorer'
@@ -572,12 +546,12 @@ else:
 
 # These are the same regardless of network
 # They are the way data is stored in the database which is network agnostic
-SCRADDR_P2PKH_BYTE    = '\x00'
-SCRADDR_P2SH_BYTE     = '\x05'
-SCRADDR_MULTISIG_BYTE = '\xfe'
-SCRADDR_NONSTD_BYTE   = '\xff'
-SCRADDR_P2WPKH_BYTE   = '\x90'
-SCRADDR_P2WSH_BYTE    = '\x95'
+SCRADDR_P2PKH_BYTE    = b'\x00'
+SCRADDR_P2SH_BYTE     = b'\x05'
+SCRADDR_MULTISIG_BYTE = b'\xfe'
+SCRADDR_NONSTD_BYTE   = b'\xff'
+SCRADDR_P2WPKH_BYTE   = b'\x90'
+SCRADDR_P2WSH_BYTE    = b'\x95'
 SCRADDR_BYTE_LIST     = [ADDRBYTE, \
                          P2SHBYTE, \
                          SCRADDR_P2WPKH_BYTE, SCRADDR_P2WSH_BYTE, \
@@ -606,7 +580,6 @@ CPP_TXOUT_STDSINGLESIG = [CPP_TXOUT_STDHASH160, \
                           CPP_TXOUT_STDPUBKEY33]
 CPP_TXOUT_NESTED_SINGLESIG = [CPP_TXOUT_STDPUBKEY33,
                           CPP_TXOUT_P2WPKH]
-CPP_TXOUT_SEGWIT = [AddressType_P2SH_P2WPKH]
 
 CPP_TXOUT_SCRIPT_NAMES = ['']*9
 CPP_TXOUT_SCRIPT_NAMES[CPP_TXOUT_STDHASH160]  = 'Standard (PKH)'
@@ -640,9 +613,6 @@ CPP_TXIN_SCRIPT_NAMES[CPP_TXIN_SPENDMULTI]  = 'Spend Multisig'
 CPP_TXIN_SCRIPT_NAMES[CPP_TXIN_SPENDP2SH]   = 'Spend P2SH'
 CPP_TXIN_SCRIPT_NAMES[CPP_TXIN_NONSTANDARD] = 'Non-Standard'
 
-#default address type
-DEFAULT_ADDR_TYPE = 'P2PKH'
-
 ################################################################################
 if not CLI_OPTIONS.satoshiPort == DEFAULT:
    try:
@@ -667,22 +637,43 @@ if not CLI_OPTIONS.rpcport == DEFAULT:
 
 
 if sys.argv[0]=='ArmoryQt.py':
-   print '********************************************************************************'
-   print 'Loading Armory Engine:'
-   print '   Armory Version:      ', getVersionString(BTCARMORY_VERSION)
-   print '   Armory Build:        ', BTCARMORY_BUILD
-   print '   PyBtcWallet  Version:', getVersionString(PYBTCWALLET_VERSION)
-   print 'Detected Operating system:', OS_NAME
-   print '   OS Variant            :', OS_VARIANT
-   print '   User home-directory   :', USER_HOME_DIR
-   print '   Satoshi BTC directory :', BTC_HOME_DIR
-   print '   Armory home dir       :', ARMORY_HOME_DIR
-   print '   ArmoryDB directory     :', ARMORY_DB_DIR
-   print '   Armory settings file  :', SETTINGS_PATH
-   print '   Armory log file       :', ARMORY_LOG_FILE
-   print '   Do wallet checking    :', DO_WALLET_CHECK
+   print('********************************************************************************')
+   print('Loading Armory Engine:')
+   print('   Armory Version:      ', getVersionString(BTCARMORY_VERSION))
+   print('   Armory Build:        ', BTCARMORY_BUILD)
+   print('   PyBtcWallet  Version:', getVersionString(PYBTCWALLET_VERSION))
+   print('Detected Operating system:', OS_NAME)
+   print('   OS Variant            :', OS_VARIANT)
+   print('   User home-directory   :', USER_HOME_DIR)
+   print('   Satoshi BTC directory :', BTC_HOME_DIR)
+   print('   Armory home dir       :', ARMORY_HOME_DIR)
+   print('   ArmoryDB directory     :', ARMORY_DB_DIR)
+   print('   Armory settings file  :', SETTINGS_PATH)
+   print('   Armory log file       :', ARMORY_LOG_FILE)
+   print('   Do wallet checking    :', DO_WALLET_CHECK)
 
-
+################################################################################
+def ipAddrVersion(ipAddr):
+   """
+   Function that gets the IP version (4/6) for a given address. If the address
+   is invalid, the return value will be 0.
+   """
+   # Python 3.3+ makes things a bit easier.
+   if sys.info.version[0] == 2:
+      try:
+         socket.inet_pton(socket.AF_INET, ipAddr)
+         return 4
+      except socket.error:
+         try:
+            socket.inet_pton(socket.AF_INET6, ipAddr)
+            return 6
+         except:
+            return 0
+   else:
+      try:
+         return ipaddress.ip_address(str(ipAddr)).version
+      except ValueError:
+         return 0
 
 ################################################################################
 def launchProcess(cmd, useStartInfo=True, *args, **kwargs):
@@ -710,95 +701,6 @@ def launchProcess(cmd, useStartInfo=True, *args, **kwargs):
                      stdout=PIPE, \
                      stderr=PIPE, \
                      **kwargs)
-
-
-################################################################################
-def killProcess(pid, sig='default'):
-   # I had to do this, because killing a process in Windows has issues
-   # when using py2exe (yes, os.kill does not work, for the same reason
-   # I had to pass stdin/stdout/stderr everywhere...
-   LOGWARN('Killing process pid=%d', pid)
-   if not OS_WINDOWS:
-      import os
-      sig = signal.SIGKILL if sig=='default' else sig
-      os.kill(pid, sig)
-   else:
-      import sys, os.path, ctypes, ctypes.wintypes
-      k32 = ctypes.WinDLL('kernel32.dll')
-      k32.OpenProcess.restype = ctypes.wintypes.HANDLE
-      k32.TerminateProcess.restype = ctypes.wintypes.BOOL
-      hProcess = k32.OpenProcess(1, False, pid)
-      k32.TerminateProcess(hProcess, 1)
-      k32.CloseHandle(hProcess)
-
-
-
-################################################################################
-def subprocess_check_output(*popenargs, **kwargs):
-   """
-   Run command with arguments and return its output as a byte string.
-   Backported from Python 2.7, because it's stupid useful, short, and
-   won't exist on systems using Python 2.6 or earlier
-   """
-   if not OS_WINDOWS:
-      from subprocess import CalledProcessError
-   else:
-      from subprocess_win import CalledProcessError
-
-   process = launchProcess(*popenargs, **kwargs)
-   output, unused_err = process.communicate()
-   retcode = process.poll()
-   if retcode:
-      cmd = kwargs.get("args")
-      if cmd is None:
-         cmd = popenargs[0]
-      error = CalledProcessError(retcode, cmd)
-      error.output = output
-      raise error
-   return output
-
-
-################################################################################
-def killProcessTree(pid):
-   # In this case, Windows is easier because we know it has the get_children
-   # call, because have bundled a recent version of psutil.  Linux, however,
-   # does not have that function call in earlier versions.
-   if not OS_WINDOWS:
-      from subprocess import Popen, PIPE
-   else:
-      from subprocess_win import Popen, PIPE
-
-   if not OS_LINUX:
-      for child in psutil.Process(pid).get_children():
-         killProcess(child.pid)
-   else:
-      proc = Popen("ps -o pid --ppid %d --noheaders" % pid, shell=True, stdout=PIPE)
-      out,err = proc.communicate()
-      for pid_str in out.split("\n")[:-1]:
-         killProcess(int(pid_str))
-
-
-################################################################################
-# Similar to subprocess_check_output, but used for long-running commands
-def execAndWait(cli_str, timeout=0, useStartInfo=True):
-   """
-   There may actually still be references to this function where check_output
-   would've been more appropriate.  But I didn't know about check_output at
-   the time...
-   """
-
-   process = launchProcess(cli_str, shell=True, useStartInfo=useStartInfo)
-   pid = process.pid
-   start = RightNow()
-   while process.poll() == None:
-      time.sleep(0.1)
-      if timeout>0 and (RightNow() - start)>timeout:
-         print 'Process exceeded timeout, killing it'
-         killProcess(pid)
-   out,err = process.communicate()
-   return [out,err]
-
-
 
 
 #########  INITIALIZE LOGGING UTILITIES  ##########
@@ -873,18 +775,18 @@ def LOGEXCEPT(msg, *a):
 
 def chopLogFile(filename, size):
    if not os.path.exists(filename):
-      print 'Log file doesn\'t exist [yet]'
+      print('Log file doesn\'t exist [yet]')
       return
 
-   logFile = open(filename, 'r')
+   logFile = open(filename, 'rb')
    logFile.seek(0,2) # move the cursor to the end of the file
    currentSize = logFile.tell()
    if currentSize > size:
       # this makes sure we don't get stuck reading an entire file
       # that is bigger than the available memory.
       # Also have to avoid cutting off the first line if truncating the file.
-      if currentSize > size+MEGABYTE:
-         logFile.seek(-(size+MEGABYTE), 2)
+      if currentSize > int(size)+int(MEGABYTE):
+         logFile.seek(-(int(size)+int(MEGABYTE)), 2)
       else:
          logFile.seek(0,0)
       logLines = logFile.readlines()
@@ -897,7 +799,7 @@ def chopLogFile(filename, size):
          if nBytes>size:
             break
 
-      logFile = open(filename, 'w')
+      logFile = open(filename, 'wb')
       for line in logLines[-nLines:]:
          logFile.write(line)
       logFile.close()
@@ -911,7 +813,6 @@ DEFAULT_CONSOLE_LOGTHRESH = logging.WARNING
 DEFAULT_FILE_LOGTHRESH    = logging.INFO
 
 DEFAULT_PPRINT_LOGLEVEL   = logging.DEBUG
-DEFAULT_RAWDATA_LOGLEVEL  = logging.DEBUG
 
 rootLogger = logging.getLogger('')
 if CLI_OPTIONS.doDebug or CLI_OPTIONS.netlog or CLI_OPTIONS.mtdebug:
@@ -964,27 +865,9 @@ def LOGPPRINT(theObj, loglevel=DEFAULT_PPRINT_LOGLEVEL):
    methodStr  = '(PPRINT from %s:%d)\n' % (filename,method)
    logging.log(loglevel, methodStr + printedStr)
 
-# For super-debug mode, we'll write out raw data
-def LOGRAWDATA(rawStr, loglevel=DEFAULT_RAWDATA_LOGLEVEL):
-   dtype = isLikelyDataType(rawStr)
-   stkOneUp = traceback.extract_stack()[-2]
-   filename,method = stkOneUp[0], stkOneUp[1]
-   methodStr  = '(PPRINT from %s:%d)\n' % (filename,method)
-   pstr = rawStr[:]
-   if dtype==DATATYPE.Binary:
-      pstr = binary_to_hex(rawStr)
-      pstr = prettyHex(pstr, indent='  ', withAddr=False)
-   elif dtype==DATATYPE.Hex:
-      pstr = prettyHex(pstr, indent='  ', withAddr=False)
-   else:
-      pstr = '   ' + '\n   '.join(pstr.split('\n'))
-
-   logging.log(loglevel, methodStr + pstr)
-
-
 cpplogfile = None
 if CLI_OPTIONS.logDisable:
-   print 'Logging is disabled'
+   print('Logging is disabled')
    rootLogger.disabled = True
 
 
@@ -1114,68 +997,6 @@ if CLI_OPTIONS.useTorSettings:
    CLI_OPTIONS.skipStatsReport = True
    CLI_OPTIONS.forceOnline = True
 
-
-
-################################################################################
-def addWalletToList(inWltPath, inWltList):
-   '''Helper function that checks to see if a path contains a valid wallet. If
-      so, the wallet will be added to the incoming list.'''
-   if os.path.isfile(inWltPath):
-      if not inWltPath.endswith('backup.wallet'):
-         openfile = open(inWltPath, 'rb')
-         first8 = openfile.read(8)
-         openfile.close()
-         if first8=='\xbaWALLET\x00':
-            inWltList.append(inWltPath)
-   else:
-      if not os.path.isdir(inWltPath):
-         LOGWARN('Path %s does not exist.' % inWltPath)
-      else:
-         LOGDEBUG('%s is a directory.' % inWltPath)
-
-
-################################################################################
-def readWalletFiles(inWltList=None):
-   '''Function that finds the paths of all non-backup wallets in the Armory
-      data directory (nothing passed in) or in a list of wallet paths (paths
-      passed in.'''
-   wltPaths = []
-
-   if not inWltList:
-      for f in os.listdir(ARMORY_HOME_DIR):
-         fullPath = os.path.join(ARMORY_HOME_DIR, f)
-         addWalletToList(fullPath, wltPaths)
-   else:
-      for w in inWltList:
-         addWalletToList(w, wltPaths)
-
-   return wltPaths
-
-
-################################################################################
-# Load the C++ utilites here
-#
-#    The SWIG/C++ block utilities give us access to the blockchain, fast ECDSA
-#    operations, and general encryption/secure-binary containers
-################################################################################
-try:
-   import CppBlockUtils as Cpp
-   from CppBlockUtils import CryptoECDSA, SecureBinaryData
-   LOGINFO('C++ block utilities loaded successfully')
-except:
-   LOGCRIT('C++ block utilities not available.')
-   LOGCRIT('   Make sure that you have the SWIG-compiled modules')
-   LOGCRIT('   in the current directory (or added to the PATH)')
-   LOGCRIT('   Specifically, you need:')
-   LOGCRIT('       CppBlockUtils.py     and')
-   if OS_LINUX or OS_MACOSX:
-      LOGCRIT('       _CppBlockUtils.so')
-   elif OS_WINDOWS:
-      LOGCRIT('       _CppBlockUtils.pyd')
-   else:
-      LOGCRIT('\n\n... UNKNOWN operating system')
-   raise
-
 ################################################################################
 # Get system details for logging purposes
 class DumbStruct(object): pass
@@ -1190,17 +1011,17 @@ def GetSystemDetails():
    out.Machine  = platform.machine().lower()
    if OS_LINUX:
       # Get total RAM
-      freeStr = subprocess_check_output('free -m', shell=True)
-      totalMemory = freeStr.split('\n')[1].split()[1]
-      out.Memory = int(totalMemory) * 1024
+      #freeStr = subprocess_check_output('free -m', shell=True)
+      #totalMemory = freeStr.split(b'\n')[1].split()[1]
+      out.Memory = 0 #int(totalMemory) * 1024
 
       # Get CPU name
       out.CpuStr = 'Unknown'
-      cpuinfo = subprocess_check_output(['cat','/proc/cpuinfo'])
-      for line in cpuinfo.split('\n'):
-         if line.strip().lower().startswith('model name'):
-            out.CpuStr = line.split(':')[1].strip()
-            break
+      #cpuinfo = subprocess_check_output(['cat','/proc/cpuinfo'])
+      #for line in cpuinfo.split(b'\n'):
+      #   if line.strip().lower().startswith(b'model name'):
+      #      out.CpuStr = str(line.split(b':')[1].strip())
+      #      break
 
 
    elif OS_WINDOWS:
@@ -1224,12 +1045,12 @@ def GetSystemDetails():
 
       stat = MEMORYSTATUSEX()
       ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(stat))
-      out.Memory = stat.ullTotalPhys/1024.
+      out.Memory = stat.ullTotalPhys//1024.
       out.CpuStr = platform.processor()
    elif OS_MACOSX:
       memsizeStr = subprocess_check_output('sysctl hw.memsize', shell=True)
-      out.Memory = int(memsizeStr.split(": ")[1]) / 1024
-      out.CpuStr = subprocess_check_output('sysctl -n machdep.cpu.brand_string', shell=True)
+      out.Memory = int(memsizeStr.split(b": ")[1]) // 1024
+      out.CpuStr = subprocess_check_output('sysctl -n machdep.cpu.brand_string', shell=True).decode('utf-8')
    else:
       out.CpuStr = 'Unknown'
       raise OSError("Can't get system specs in: %s" % platform.system())
@@ -1239,7 +1060,7 @@ def GetSystemDetails():
       out.IsX64 = platform.machine().lower() == 'amd64'
    else:
       out.IsX64 = platform.machine().lower() == 'x86_64'
-   out.Memory = out.Memory / (1024*1024.)
+   out.Memory = out.Memory // (1024*1024.)
 
    def getHddSize(adir):
       if OS_WINDOWS:
@@ -1251,8 +1072,8 @@ def GetSystemDetails():
       else:
          s = os.statvfs(adir)
          return s.f_bavail * s.f_frsize
-   out.HddAvailA = getHddSize(ARMORY_HOME_DIR) / (1024**3)
-   out.HddAvailB = getHddSize(BTC_HOME_DIR)    / (1024**3)
+   out.HddAvailA = getHddSize(ARMORY_HOME_DIR) // (1024**3)
+   out.HddAvailB = getHddSize(BTC_HOME_DIR)    // (1024**3)
    return out
 
 SystemSpecs = None
@@ -1307,7 +1128,7 @@ LOGINFO('Network Name: ' + NETWORKS[ADDRBYTE])
 LOGINFO('Satoshi Port: %d', BITCOIN_PORT)
 LOGINFO('Do wlt check: %s', str(DO_WALLET_CHECK))
 LOGINFO('Named options/arguments to armoryengine.py:')
-for key,val in ast.literal_eval(str(CLI_OPTIONS)).iteritems():
+for key,val in ast.literal_eval(str(CLI_OPTIONS)).items():
    LOGINFO('    %-16s: %s', key,val)
 LOGINFO('Other arguments:')
 for val in CLI_ARGS:
@@ -1340,6 +1161,7 @@ def GetExecDir():
 
 
 
+################################################################################
 def coin2str(nSatoshi, ndec=8, rJust=True, maxZeros=8):
    """
    Converts a raw value (1e-8 BTC) into a formatted string for display
@@ -1371,7 +1193,6 @@ def coin2str(nSatoshi, ndec=8, rJust=True, maxZeros=8):
 
    return s
 
-
 def coin2strNZ(nSatoshi):
    """ Right-justified, minimum zeros, but with padding for alignment"""
    return coin2str(nSatoshi, 8, True, 0)
@@ -1392,30 +1213,16 @@ def coin2str_approx(nSatoshi, sigfig=3):
    approxVal = round((10**nChop) * round(posVal / (10**nChop)))
    return coin2str( (-1 if isNeg else 1)*approxVal,  maxZeros=0)
 
-
 def str2coin(theStr, negAllowed=True, maxDec=8, roundHighPrec=True):
    coinStr = str(theStr)
    if len(coinStr.strip())==0:
       raise ValueError
 
-   isNeg = ('-' in coinStr)
-   coinStrPos = coinStr.replace('-','')
-   if not '.' in coinStrPos:
-      if not negAllowed and isNeg:
-         raise NegativeValueError
-      return (int(coinStrPos)*ONE_BTC)*(-1 if isNeg else 1)
-   else:
-      lhs,rhs = coinStrPos.strip().split('.')
-      if len(lhs.strip('-'))==0:
-         lhs='0'
-      if len(rhs)>maxDec and not roundHighPrec:
-         raise TooMuchPrecisionError
-      if not negAllowed and isNeg:
-         raise NegativeValueError
-      fullInt = (int(lhs + rhs[:9].ljust(9,'0')) + 5) / 10
-      return fullInt*(-1 if isNeg else 1)
-
-
+   floatVal = float(coinStr)
+   satoshiVal = int(floatVal * ONE_BTC)
+   if satoshiVal < 0 and negAllowed == False:
+      raise NegativeValueError
+   return satoshiVal
 
 ################################################################################
 def makeAsciiBlock(binStr, headStr='', wid=64, newline='\n'):
@@ -1424,7 +1231,8 @@ def makeAsciiBlock(binStr, headStr='', wid=64, newline='\n'):
    sz = len(b64Data)
    firstLine = '=====%s' % headStr
    lines = [firstLine.ljust(wid, '=')]
-   lines.extend([b64Data[wid*i:wid*(i+1)] for i in range((sz-1)/wid+1)])
+   lines.extend([b64Data[wid*i:wid*(i+1)].decode('ascii') \
+      for i in range(int((sz-1)/wid)+1)])
    lines.append("="*wid)
    return newline.join(lines)
 
@@ -1434,7 +1242,7 @@ def readAsciiBlock(ablock, headStr=''):
    headStr = ''
    rawData = None
 
-   # Contiue only if we actually get data.
+   # Continue only if we actually get data.
    if len(ablock) > 0:
       lines = ablock.strip().split()
       if not lines[0].startswith('=====%s' % headStr) or \
@@ -1542,8 +1350,7 @@ def hash160_to_p2pkhash_script(binStr20):
    if not len(binStr20)==20:
       raise InvalidHashError('Tried to convert non-20-byte str to p2pkh script')
 
-   from Transaction import getOpCode
-   from Script import scriptPushData
+   from armoryengine.Script import scriptPushData, getOpCode
    outScript = ''.join([  getOpCode('OP_DUP'        ), \
                           getOpCode('OP_HASH160'    ), \
                           scriptPushData(binStr20),
@@ -1559,8 +1366,7 @@ def hash160_to_p2sh_script(binStr20):
    if not len(binStr20)==20:
       raise InvalidHashError('Tried to convert non-20-byte str to p2sh script')
 
-   from Transaction import getOpCode
-   from Script import scriptPushData
+   from armoryengine.Script import scriptPushData, getOpCode
    outScript = ''.join([  getOpCode('OP_HASH160'),
                           scriptPushData(binStr20),
                           getOpCode('OP_EQUAL')])
@@ -1581,8 +1387,7 @@ def pubkey_to_p2pk_script(binStr33or65):
    if not len(binStr33or65) in [33, 65]:
       raise KeyDataError('Invalid public key supplied to p2pk script')
 
-   from Transaction import getOpCode
-   from Script import scriptPushData
+   from armoryengine.Script import scriptPushData, getOpCode
    serPubKey = scriptPushData(binStr33or65)
    outScript = serPubKey + getOpCode('OP_CHECKSIG')
    return outScript
@@ -1603,7 +1408,7 @@ def pubkeylist_to_multisig_script(pkList, M, withSort=True):
    if sum([  (0 if len(pk) in [33,65] else 1)   for pk in pkList]) > 0:
       raise KeyDataError('Not all strings in pkList are 33 or 65 bytes!')
 
-   from Transaction import getOpCode
+   from armoryengine.Script import getOpCode
    opM = getOpCode('OP_%d' % M)
    opN = getOpCode('OP_%d' % len(pkList))
 
@@ -1621,125 +1426,12 @@ def pubkeylist_to_multisig_script(pkList, M, withSort=True):
    return outScript
 
 ################################################################################
-def scrAddr_to_script(scraddr):
-   """
-   Convert a scrAddr string (used by BDM) to the correct TxOut script
-   Note this only works for P2PKH and P2SH scraddrs.  Multi-sig and
-   all non-standard scripts cannot be derived from scrAddrs.  In a way,
-   a scrAddr is intended to be an intelligent "hash" of the script,
-   and it's a perk that most of the time we can reverse it to get the script.
-   """
-   if len(scraddr)==0:
-      raise BadAddressError('Empty scraddr')
-
-   prefix = scraddr[0]
-   if not prefix in SCRADDR_BYTE_LIST or not len(scraddr)==21:
-      LOGERROR('Bad scraddr: "%s"' % binary_to_hex(scraddr))
-      raise BadAddressError('Invalid ScrAddress')
-
-   if prefix==ADDRBYTE:
-      return hash160_to_p2pkhash_script(scraddr[1:])
-   elif prefix==P2SHBYTE:
-      return hash160_to_p2sh_script(scraddr[1:])
-   else:
-      LOGERROR('Unsupported scraddr type: "%s"' % binary_to_hex(scraddr))
-      raise BadAddressError('Can only convert P2PKH and P2SH scripts')
-
-
-################################################################################
-def script_to_scrAddr(binScript):
-   """ Convert a binary script to scrAddr string (used by BDM) """
-   return Cpp.BtcUtils().getScrAddrForScript(binScript)
-
-################################################################################
-def script_to_addrStr(binScript):
-   """ Convert a binary script to scrAddr string (used by BDM) """
-   return scrAddr_to_addrStr(script_to_scrAddr(binScript))
-
-################################################################################
-def scrAddr_to_addrStr(scrAddr):
-   if len(scrAddr)==0:
-      raise BadAddressError('Empty scrAddr')
-
-   prefix = scrAddr[0]
-   if not prefix in SCRADDR_BYTE_LIST or not len(scrAddr)==21:
-      raise BadAddressError('Invalid ScrAddress')
-
-   if prefix==ADDRBYTE:
-      return hash160_to_addrStr(scrAddr[1:])
-   elif prefix==P2SHBYTE:
-      return hash160_to_p2shAddrStr(scrAddr[1:])
-   elif prefix==SCRADDR_P2WPKH_BYTE or prefix==SCRADDR_P2WSH_BYTE:
-      return Cpp.BtcUtils_scriptToBech32(scrAddr[1:], BECH32_PREFIX)
-   else:
-      LOGERROR('Unsupported scrAddr type: "%s"' % binary_to_hex(scrAddr))
-      raise BadAddressError('Can only convert P2PKH and P2SH scripts')
-
-################################################################################
-# We beat around the bush here, to make sure it goes through addrStr which
-# triggers errors if this isn't a regular addr or P2SH addr
-def scrAddr_to_hash160(scrAddr):
-   addr = scrAddr_to_addrStr(scrAddr)
-   atype, a160 = addrStr_to_hash160(addr)
-   return (atype, a160)
-
-
-################################################################################
-def addrStr_to_scrAddr(addrStr, p2pkhByte = ADDRBYTE, p2shByte = P2SHBYTE):
-   if addrStr == '':
-      return '';
-
-   if not checkAddrStrValid(addrStr, [p2pkhByte, p2shByte]):
-      BadAddressError('Invalid address: "%s"' % addrStr)
-
-   atype, a160 = addrStr_to_hash160(addrStr, True, p2pkhByte, p2shByte)
-   if atype==p2pkhByte:
-      return p2pkhByte + a160
-   elif atype==p2shByte:
-      return p2shByte + a160
-   else:
-      BadAddressError('Invalid address: "%s"' % addrStr)
-
-
-################################################################################
-def addrStr_to_script(addrStr):
-   """ Convert an addr string to a binary script """
-   return scrAddr_to_script(addrStr_to_scrAddr(addrStr))
-
-
-
-################################################################################
-# Load the C++ utilites here
-#
-#    The SWIG/C++ block utilities give us access to the blockchain, fast ECDSA
-#    operations, and general encryption/secure-binary containers
-################################################################################
-try:
-   import CppBlockUtils as Cpp
-   from CppBlockUtils import CryptoECDSA, SecureBinaryData
-   LOGINFO('C++ block utilities loaded successfully')
-except:
-   LOGCRIT('C++ block utilities not available.')
-   LOGCRIT('   Make sure that you have the SWIG-compiled modules')
-   LOGCRIT('   in the current directory (or added to the PATH)')
-   LOGCRIT('   Specifically, you need:')
-   LOGCRIT('       CppBlockUtils.py     and')
-   if OS_LINUX or OS_MACOSX:
-      LOGCRIT('       _CppBlockUtils.so')
-   elif OS_WINDOWS:
-      LOGCRIT('       _CppBlockUtils.pyd')
-   else:
-      LOGCRIT('\n\n... UNKNOWN operating system')
-   raise
-
-
-################################################################################
 # We need to have some methods for casting ASCII<->Unicode<->Preferred
 DEFAULT_ENCODING = 'utf-8'
 
 def isASCII(theStr):
    try:
-      theStr.decode('ascii')
+      theStr.encode('ascii')
       return True
    except UnicodeEncodeError:
       return False
@@ -1751,22 +1443,25 @@ def isASCII(theStr):
 
 
 def toBytes(theStr, theEncoding=DEFAULT_ENCODING):
-   if isinstance(theStr, unicode):
+   if isinstance(theStr, str):
       return theStr.encode(theEncoding)
-   elif isinstance(theStr, str):
+   elif isinstance(theStr, bytes):
       return theStr
    else:
-      LOGERROR('toBytes() not been defined for input: %s', str(type(theStr)))
+      try:
+         return theStr.encode(theEncoding)
+      except:
+         raise Exception('toBytes() not been defined for input: %s', str(type(theStr)))
 
 
 def toUnicode(theStr, theEncoding=DEFAULT_ENCODING):
-   if isinstance(theStr, unicode):
+   if isinstance(theStr, str):
       return theStr
-   elif isinstance(theStr, str):
-      return unicode(theStr, theEncoding)
+   elif isinstance(theStr, bytes):
+      return theStr.decode(theEncoding)
    else:
       try:
-         return unicode(theStr)
+         return str(theStr)
       except:
          LOGEXCEPT('toUnicode() not defined for %s', str(type(theStr)))
 
@@ -1792,83 +1487,15 @@ def unicode_truncate(theStr, length, encoding='utf-8'):
 #http://stackoverflow.com/questions/36932/whats-the-best-way-to-implement-an-enum-in-python
 def enum(*sequential, **named):
    enums = dict(zip(sequential, range(len(sequential))), **named)
-   return type('Enum', (), enums)
+   return type(str('Enum'), (), enums)
 
 DATATYPE = enum("Binary", 'Base58', 'Hex')
 INTERNET_STATUS = enum('Available', 'Unavailable', 'DidNotCheck')
 
-
-def isLikelyDataType(theStr, dtype=None):
-   """
-   This really shouldn't be used on short strings.  Hence
-   why it's called "likely" datatype...
-   """
-   ret = None
-   hexCount = sum([1 if c in BASE16CHARS else 0 for c in theStr])
-   b58Count = sum([1 if c in BASE58CHARS else 0 for c in theStr])
-   canBeHex = hexCount==len(theStr)
-   canBeB58 = b58Count==len(theStr)
-   if canBeHex:
-      ret = DATATYPE.Hex
-   elif canBeB58 and not canBeHex:
-      ret = DATATYPE.Base58
-   else:
-      ret = DATATYPE.Binary
-
-   if dtype==None:
-      return ret
-   else:
-      return dtype==ret
-
 cpplogfile = None
 if CLI_OPTIONS.logDisable:
-   print 'Logging is disabled'
+   print('Logging is disabled')
    rootLogger.disabled = True
-
-
-
-
-
-# The database uses prefixes to identify type of address.  Until the new
-# wallet format is created that supports more than just hash160 addresses
-# we have to explicitly add the prefix to any hash160 values that are being
-# sent to any of the C++ utilities.  For instance, the BlockDataManager (BDM)
-# (C++ stuff) tracks regular hash160 addresses, P2SH, multisig, and all
-# non-standard scripts.  Any such "scrAddrs" (script-addresses) will eventually
-# be valid entities for tracking in a wallet.  Until then, all of our python
-# utilities all use just hash160 values, and we manually add the prefix
-# before talking to the BDM.
-HASH160PREFIX     = '\x00'
-HASH160_TESTNET   = '\x6f'
-P2SHPREFIX        = '\x05'
-P2SH_TESTNET      = '\xc4'
-MSIGPREFIX        = '\xfe'
-NONSTDPREFIX      = '\xff'
-def CheckHash160(scrAddr):
-   if not len(scrAddr)==21:
-      raise BadAddressError("Supplied scrAddr is not a Hash160 value!")
-   if not scrAddr[0] in [ADDRBYTE, P2SHBYTE]:
-      raise BadAddressError("Supplied scrAddr is not a Hash160 value!")
-   return scrAddr[1:]
-
-def Hash160ToScrAddr(a160):
-   if not len(a160)==20:
-      LOGERROR('Invalid hash160 value!')
-   return HASH160PREFIX + a160
-
-def HexHash160ToScrAddr(a160):
-   if not len(a160)==40:
-      LOGERROR('Invalid hash160 value!')
-   return HASH160PREFIX + hex_to_binary(a160)
-
-# Some more constants that are needed to play nice with the C++ utilities
-ARMORY_DB_BARE = 0
-ARMORY_DB_LITE = 1
-ARMORY_DB_PARTIAL = 2
-ARMORY_DB_FULL = 3
-ARMORY_DB_SUPER = 4
-DB_PRUNE_ALL = 0
-DB_PRUNE_NONE = 1
 
 
 # Some time methods (RightNow() return local unix timestamp)
@@ -1900,16 +1527,17 @@ def hash256(s):
    return sha256(sha256(s))
 def hash160(s):
    """ RIPEMD160( SHA256( binaryStr ) ) """
-   return Cpp.BtcUtils().getHash160_SWIG(s)
+   from armoryengine.CppBridge import TheBridge
+   return TheBridge.utils.getHash160(s)
 
 
 def HMAC(key, msg, hashfunc=sha512, hashsz=None):
    """ This is intended to be simple, not fast.  For speed, use HDWalletCrypto() """
-   hashsz = len(hashfunc('')) if hashsz==None else hashsz
+   hashsz = len(hashfunc(b'')) if hashsz==None else hashsz
    key = (hashfunc(key) if len(key)>hashsz else key)
-   key = key.ljust(hashsz, '\x00')
-   okey = ''.join([chr(ord('\x5c')^ord(c)) for c in key])
-   ikey = ''.join([chr(ord('\x36')^ord(c)) for c in key])
+   key = key.ljust(hashsz, b'\x00')
+   okey = b''.join([pack('B', ord(b'\x5c')^(ord(c) if isinstance(c, str) else c)) for c in key])
+   ikey = b''.join([pack('B', ord(b'\x36')^(ord(c) if isinstance(c, str) else c)) for c in key])
    return hashfunc( okey + hashfunc(ikey + msg) )
 
 HMAC256 = lambda key,msg: HMAC(key, msg, sha256, 32)
@@ -1925,7 +1553,7 @@ def prettyHex(theStr, indent='', withAddr=True, major=8, minor=8):
    """
    outStr = ''
    sz = len(theStr)
-   nchunk = int((sz-1)/minor) + 1;
+   nchunk = int((sz-1)/minor) + 1
    for i in range(nchunk):
       if i%major==0:
          outStr += '\n'  + indent
@@ -1948,12 +1576,12 @@ def pprintHex(theStr, indent='', withAddr=True, major=8, minor=8):
    entire block, remove address markings, or change the major/minor
    grouping size (major * minor = hexCharsPerRow)
    """
-   print prettyHex(theStr, indent, withAddr, major, minor)
+   print(prettyHex(theStr, indent, withAddr, major, minor))
 
 
 def pprintDiff(str1, str2, indent=''):
    if not len(str1)==len(str2):
-      print 'pprintDiff: Strings are different length!'
+      print('pprintDiff: Strings are different length!')
       return
 
    byteDiff = []
@@ -1969,7 +1597,7 @@ def pprintDiff(str1, str2, indent=''):
 ##### Switch endian-ness #####
 def hex_switchEndian(s):
    """ Switches the endianness of a hex string (in pairs of hex chars) """
-   pairList = [s[i]+s[i+1] for i in xrange(0,len(s),2)]
+   pairList = [s[i]+s[i+1] for i in range(0,len(s),2)]
    return ''.join(pairList[::-1])
 def binary_switchEndian(s):
    """ Switches the endianness of a binary string """
@@ -1984,9 +1612,8 @@ def int_to_hex(i, widthBytes=0, endOut=LITTLEENDIAN):
    little-endian.   Use the widthBytes argument to add 0-padding where needed
    if you are expecting constant-length output.
    """
-   h = hex(i)[2:]
-   if isinstance(i,long):
-      h = h[:-1]
+   h = hex(int(i))[2:]
+  
    if len(h)%2 == 1:
       h = '0'+h
    if not widthBytes==0:
@@ -2018,7 +1645,7 @@ def hex_to_binary(h, endIn=LITTLEENDIAN, endOut=LITTLEENDIAN):
    bout = h.replace(' ','')  # copies data, no references
    if not endIn==endOut:
       bout = hex_switchEndian(bout)
-   return bout.decode('hex_codec')
+   return codecs.decode(bout, 'hex_codec')
 
 
 def binary_to_hex(b, endOut=LITTLEENDIAN, endIn=LITTLEENDIAN):
@@ -2026,7 +1653,7 @@ def binary_to_hex(b, endOut=LITTLEENDIAN, endIn=LITTLEENDIAN):
    Converts binary to hexadecimal.  Endianness is only switched
    if (endIn != endOut)
    """
-   hout = b.encode('hex_codec')
+   hout = b.hex()
    if not endOut==endIn:
       hout = hex_switchEndian(hout)
    return hout
@@ -2070,166 +1697,7 @@ def bitset_to_int(bitset):
       n += (0 if bit=='0' else 1) * 2**i
    return n
 
-
-
 EmptyHash = hex_to_binary('00'*32)
-
-
-################################################################################
-# BINARY/BASE58 CONVERSIONS
-def binary_to_base58(binstr):
-   """
-   This method applies the Bitcoin-specific conversion from binary to Base58
-   which may includes some extra "zero" bytes, such as is the case with the
-   main-network addresses.
-
-   This method is labeled as outputting an "addrStr", but it's really this
-   special kind of Base58 converter, which makes it usable for encoding other
-   data, such as ECDSA keys or scripts.
-   """
-   padding = 0;
-   for b in binstr:
-      if b=='\x00':
-         padding+=1
-      else:
-         break
-
-   n = 0
-   for ch in binstr:
-      n *= 256
-      n += ord(ch)
-
-   b58 = ''
-   while n > 0:
-      n, r = divmod (n, 58)
-      b58 = BASE58CHARS[r] + b58
-   return '1'*padding + b58
-
-
-################################################################################
-def base58_to_binary(addr):
-   """
-   This method applies the Bitcoin-specific conversion from Base58 to binary
-   which may includes some extra "zero" bytes, such as is the case with the
-   main-network addresses.
-
-   This method is labeled as inputting an "addrStr", but it's really this
-   special kind of Base58 converter, which makes it usable for encoding other
-   data, such as ECDSA keys or scripts.
-   """
-   # Count the zeros ('1' characters) at the beginning
-   padding = 0;
-   for c in addr:
-      if c=='1':
-         padding+=1
-      else:
-         break
-
-   n = 0
-   for ch in addr:
-      n *= 58
-      if ch in BASE58CHARS:
-         n += BASE58CHARS.index(ch)
-      else:
-         raise NonBase58CharacterError("Unrecognized Base 58 Character: %s" % ch)
-
-   binOut = ''
-   while n>0:
-      d,m = divmod(n,256)
-      binOut = chr(m) + binOut
-      n = d
-   return '\x00'*padding + binOut
-
-
-################################################################################
-def privKey_to_base58(binKey):
-   '''Convert a 32-byte private key to the Satoshi client Base58 format.'''
-
-   retBase58 = ''
-   # For now, we don't support compressed private keys. (When we do, add
-   # 0x01 after the private key when returning a private key.)
-   try:
-      compByte = ''
-      if 0:
-         compByte = '\x01'
-      privHashAddr = SecureBinaryData(PRIVKEYBYTE + binKey + compByte)
-      privHash256 = \
-                    SecureBinaryData(hash256(privHashAddr.toBinStr())[0:4])
-      privHashFinal = \
-              SecureBinaryData(binary_to_base58(privHashAddr.toBinStr() + \
-                                                privHash256.toBinStr()))
-      retBase58 = privHashFinal.toBinStr()
-   finally:
-      privHashAddr.destroy()
-      privHash256.destroy()
-      privHashFinal.destroy()
-
-   return retBase58
-
-
-################################################################################
-def hash160_to_addrStr(binStr, netbyte=ADDRBYTE):
-   """
-   Converts the 20-byte pubKeyHash to 25-byte binary Bitcoin address
-   which includes the network byte (prefix) and 4-byte checksum (suffix)
-   """
-
-   if not len(binStr) == 20:
-      raise InvalidHashError('Input string is %d bytes' % len(binStr))
-
-   addr21 = netbyte + binStr
-   addr25 = addr21 + hash256(addr21)[:4]
-   return binary_to_base58(addr25);
-
-################################################################################
-def hash160_to_p2shAddrStr(binStr):
-   if not len(binStr) == 20:
-      raise InvalidHashError('Input string is %d bytes' % len(binStr))
-
-   addr21 = P2SHBYTE + binStr
-   addr25 = addr21 + hash256(addr21)[:4]
-   return binary_to_base58(addr25);
-
-################################################################################
-def binScript_to_p2shAddrStr(binScript):
-   return hash160_to_p2shAddrStr(hash160(binScript))
-
-################################################################################
-def addrStr_is_p2sh(b58Str):
-   if len(b58Str)==0:
-      return False
-
-   if sum([(0 if c in BASE58CHARS else 1) for c in b58Str]) > 0:
-      return False
-
-   binStr = base58_to_binary(b58Str)
-   if not len(binStr)==25:
-      return False
-
-   if not hash256(binStr[:21])[:4] == binStr[-4:]:
-      return False
-
-   return (binStr[0] == P2SHBYTE)
-
-################################################################################
-# As of version 0.90.1, this returns the prefix byte with the hash160.  This is
-# because we need to handle/distinguish regular addresses from P2SH.  All code
-# using this method must be updated to expect 2 outputs and check the prefix.
-def addrStr_to_hash160(b58Str, p2shAllowed=True, \
-                       addrByte = ADDRBYTE, p2shByte = P2SHBYTE):
-   binStr = base58_to_binary(b58Str)
-   if not p2shAllowed and binStr[0]==p2shByte:
-      raise P2SHNotSupportedError
-   if not len(binStr) == 25:
-      raise BadAddressError('Address string is %d bytes' % len(binStr))
-
-   if not hash256(binStr[:21])[:4] == binStr[-4:]:
-      raise ChecksumError('Address string has invalid checksum')
-
-   if not binStr[0] in (addrByte, p2shByte):
-      raise BadAddressError('Unknown addr prefix: %s' % binary_to_hex(binStr[0]))
-
-   return (binStr[0], binStr[1:-4])
 
 
 ###### Typing-friendly Base16 #####
@@ -2292,14 +1760,14 @@ def readSixteenEasyBytes(et18):
 def ubtc_to_floatStr(n):
    return '%d.%08d' % divmod (n, ONE_BTC)
 def floatStr_to_ubtc(s):
-   return long(round(float(s) * ONE_BTC))
+   return int(round(float(s) * ONE_BTC))
 def float_to_btc (f):
-   return long (round(f * ONE_BTC))
+   return int (round(f * ONE_BTC))
 
 
 # From https://en.bitcoin.it/wiki/Proper_Money_Handling_(JSON-RPC)
 def JSONtoAmount(value):
-   return long(round(float(value) * 1e8))
+   return int(round(float(value) * 1e8))
 def AmountToJSON(amount):
    return float(amount / 1e8)
 
@@ -2319,9 +1787,7 @@ def unixTimeToFormatStr(unixTime, formatStr=DEFAULT_DATE_FORMAT):
    pleasant, human-readable format
    """
    dtobj = datetime.fromtimestamp(unixTime)
-   dtstr = u'' + dtobj.strftime(formatStr).decode('utf-8')
-   dtstr = dtstr.encode('ascii', errors='replace')
-   return dtstr[:-2] + dtstr[-2:].lower()
+   return dtobj.strftime(formatStr)
 
 def secondsToHumanTime(nSec):
    strPieces = []
@@ -2367,14 +1833,14 @@ def bytesToHumanSize(nBytes):
 ##### HEXSTR/VARINT #####
 def packVarInt(n):
    """ Writes 1,3,5 or 9 bytes depending on the size of n """
-   if   n < 0xfd:  return [chr(n), 1]
-   elif n < 1<<16: return ['\xfd'+pack('<H',n), 3]
-   elif n < 1<<32: return ['\xfe'+pack('<I',n), 5]
-   else:           return ['\xff'+pack('<Q',n), 9]
+   if   n < 0xfd:  return pack('B', n)
+   elif n < 1<<16: return [b'\xfd'+pack('<H',n), 3]
+   elif n < 1<<32: return [b'\xfe'+pack('<I',n), 5]
+   else:           return [b'\xff'+pack('<Q',n), 9]
 
 def unpackVarInt(hvi):
    """ Returns a pair: the integer value and number of bytes read """
-   code = unpack('<B', hvi[0])[0]
+   code = unpack('<B', hvi[0:1])[0]
    if   code  < 0xfd: return [code, 1]
    elif code == 0xfd: return [unpack('<H',hvi[1:3])[0], 3]
    elif code == 0xfe: return [unpack('<I',hvi[1:5])[0], 5]
@@ -2482,12 +1948,12 @@ def difficulty_to_binaryBits(i):
 
 
 # The following params are for the Bitcoin elliptic curves (secp256k1)
-SECP256K1_MOD   = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2FL
-SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141L
-SECP256K1_B     = 0x0000000000000000000000000000000000000000000000000000000000000007L
-SECP256K1_A     = 0x0000000000000000000000000000000000000000000000000000000000000000L
-SECP256K1_GX    = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798L
-SECP256K1_GY    = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8L
+SECP256K1_MOD   = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+SECP256K1_B     = 0x0000000000000000000000000000000000000000000000000000000000000007
+SECP256K1_A     = 0x0000000000000000000000000000000000000000000000000000000000000000
+SECP256K1_GX    = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
+SECP256K1_GY    = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
 
 ################################################################################
 ################################################################################
@@ -2524,7 +1990,7 @@ class FiniteField(object):
               256:  2**2048-1157  }
 
    def __init__(self, nbytes):
-      if not self.PRIMES.has_key(nbytes):
+      if nbytes not in self.PRIMES:
          LOGERROR('No primes available for size=%d bytes', nbytes)
          self.prime = None
          raise FiniteFieldError
@@ -2704,7 +2170,7 @@ def createTestingSubsets( fragIndices, M, maxTestCount=20):
 
       if numCombo <= maxTestCount:
          LOGINFO('Testing all %s combinations...' % numCombo)
-         for x in xrange(2**numIdx):
+         for x in range(2**numIdx):
             bits = int_to_bitset(x)
             if not bits.count('1') == M:
                continue
@@ -2744,41 +2210,6 @@ def testReconstructSecrets(fragMap, M, maxTestCount=20):
       testResults.append((subset, recon))
 
    return isRandom, testResults
-
-
-################################################################################
-def ComputeFragIDBase58(M, wltIDBin):
-   mBin4   = int_to_binary(M, widthBytes=4, endOut=BIGENDIAN)
-   fragBin = hash256(wltIDBin + mBin4)[:4]
-   fragB58 = str(M) + binary_to_base58(fragBin)
-   return fragB58
-
-################################################################################
-def ComputeFragIDLineHex(M, index, wltIDBin, isSecure=False, addSpaces=False):
-   fragID  = int_to_hex((128+M) if isSecure else M)
-   fragID += int_to_hex(index+1)
-   fragID += binary_to_hex(wltIDBin)
-
-   if addSpaces:
-      fragID = ' '.join([fragID[i*4:(i+1)*4] for i in range(4)])
-
-   return fragID
-
-
-################################################################################
-def ReadFragIDLineBin(binLine):
-   doMask = binary_to_int(binLine[0]) > 127
-   M      = binary_to_int(binLine[0]) & 0x7f
-   fnum   = binary_to_int(binLine[1])
-   fragID  = binLine[2:]
-
-   idBase58 = ComputeFragIDBase58(M, fragID) + '-#' + str(fnum)
-   return (M, fnum, fragID, doMask, idBase58)
-
-
-################################################################################
-def ReadFragIDLineHex(hexLine):
-   return ReadFragIDLineBin( hex_to_binary(hexLine.strip().replace(' ','')))
 
 # END FINITE FIELD OPERATIONS
 ################################################################################
@@ -2920,15 +2351,6 @@ def parsePrivateKeyData(theStr):
       elif len(binEntry) in (33, 37) and binEntry[-1]=='\x01':
          raise CompressedKeyError('Compressed Public keys not supported!')
       return binEntry, keyType
-
-
-
-################################################################################
-def encodePrivKeyBase58(privKeyBin):
-   bin33 = PRIVKEYBYTE + privKeyBin
-   chk = computeChecksum(bin33)
-   return binary_to_base58(bin33 + chk)
-
 
 
 URI_VERSION_STR = '1.0'
@@ -3230,15 +2652,15 @@ class PyBackgroundThread(threading.Thread):
 # Define a decorator that allows the function to be called asynchronously
 def AllowAsync(func):
    def wrappedFunc(*args, **kwargs):
-      if not 'async' in kwargs or kwargs['async']==False:
+      if not 'async_' in kwargs or kwargs['async_']==False:
          # Run the function normally
-         if 'async' in kwargs:
-            del kwargs['async']
+         if 'async_' in kwargs:
+            del kwargs['async_']
          return func(*args, **kwargs)
       else:
          # Run the function as a background thread
-         passAsync = kwargs['async']
-         del kwargs['async']
+         passAsync = kwargs['async_']
+         del kwargs['async_']
 
          thr = PyBackgroundThread(func, *args, **kwargs)
          thr.passAsync = passAsync
@@ -3250,100 +2672,6 @@ def AllowAsync(func):
 
 def emptyFunc(*args, **kwargs):
    return
-
-
-def EstimateCumulativeBlockchainSize(blkNum):
-   # I tried to make a "static" variable here so that
-   # the string wouldn't be parsed on every call, but
-   # I botched that, somehow.
-   #
-   # It doesn't *have to* be fast, but why not?
-   # Oh well..
-   blksizefile = """
-         0 285
-         20160 4496226
-         40320 9329049
-         60480 16637208
-         80640 31572990
-         82656 33260320
-         84672 35330575
-         86688 36815335
-         88704 38386205
-         100800 60605119
-         102816 64795352
-         104832 68697265
-         108864 79339447
-         112896 92608525
-         116928 116560952
-         120960 140607929
-         124992 170059586
-         129024 217718109
-         133056 303977266
-         137088 405836779
-         141120 500934468
-         145152 593217668
-         149184 673064617
-         153216 745173386
-         157248 816675650
-         161280 886105443
-         165312 970660768
-         169344 1058290613
-         173376 1140721593
-         177408 1240616018
-         179424 1306862029
-         181440 1463634913
-         183456 1639027360
-         185472 1868851317
-         187488 2019397056
-         189504 2173291204
-         191520 2352873908
-         193536 2530862533
-         195552 2744361593
-         197568 2936684028
-         199584 3115432617
-         201600 3282437367
-         203616 3490737816
-         205632 3669806064
-         207648 3848901149
-         209664 4064972247
-         211680 4278148686
-         213696 4557787597
-         215712 4786120879
-         217728 5111707340
-         219744 5419128115
-         221760 5733907456
-         223776 6053668460
-         225792 6407870776
-         227808 6652067986
-         228534 6778529822
-         257568 10838081536
-         259542 11106516992
-         271827 12968787968
-         286296 15619588096
-         290715 16626221056
-         323285 24216006308
-      """
-   strList = [line.strip().split() for line in blksizefile.strip().split('\n')]
-   BLK_SIZE_LIST = [[int(x[0]), int(x[1])] for x in strList]
-
-   if blkNum < BLK_SIZE_LIST[-1][0]:
-      # Interpolate
-      bprev,bcurr = None, None
-      for i,blkpair in enumerate(BLK_SIZE_LIST):
-         if blkNum < blkpair[0]:
-            b0,d0 = BLK_SIZE_LIST[i-1]
-            b1,d1 = blkpair
-            ratio = float(blkNum-b0)/float(b1-b0)
-            return int(ratio*d1 + (1-ratio)*d0)
-      raise ValueError('Interpolation failed for %d' % blkNum)
-
-   else:
-      bend,  dend  = BLK_SIZE_LIST[-1]
-      bend2, dend2 = BLK_SIZE_LIST[-3]
-      rate = float(dend - dend2) / float(bend - bend2)  # bytes per block
-      extraOnTop = (blkNum - bend) * rate
-      return dend+extraOnTop
-
 
 ################################################################################
 # Function checks to see if a binary value that's passed in is a valid public
@@ -3433,6 +2761,17 @@ def decompressPK(inKey, inStr=False):
       outKey = binary_to_hex(outKey)
    return outKey
 
+################################################################################
+class BlockComponent(object):
+
+   def copy(self):
+      return self.__class__().unserialize(self.serialize())
+
+   def serialize(self):
+      raise NotImplementedError
+
+   def unserialize(self):
+      raise NotImplementedError
 
 ################################################################################
 # Function that can be used to send an e-mail to multiple recipients.
@@ -3467,12 +2806,6 @@ def send_email(send_from, server, password, send_to, subject, text):
 
 
 #############################################################################
-def DeriveChaincodeFromRootKey(sbdPrivKey):
-   return SecureBinaryData( HMAC256( sbdPrivKey.getHash256(), \
-                                     'Derive Chaincode from Root Key'))
-
-
-#############################################################################
 def getLastBytesOfFile(filename, nBytes=500*1024):
    if not os.path.exists(filename):
       LOGERROR('File does not exist!')
@@ -3484,259 +2817,6 @@ def getLastBytesOfFile(filename, nBytes=500*1024):
          fin.seek(sz - nBytes)
       return fin.read()
 
-
-################################################################################
-def HardcodedKeyMaskParams():
-   paramMap = {}
-
-   # Nothing up my sleeve!  Need some hardcoded random numbers to use for
-   # encryption IV and salt.  Using the first 256 digits of Pi for the
-   # the IV, and first 256 digits of e for the salt (hashed)
-   digits_pi = ( \
-      'ARMORY_ENCRYPTION_INITIALIZATION_VECTOR_'
-      '1415926535897932384626433832795028841971693993751058209749445923'
-      '0781640628620899862803482534211706798214808651328230664709384460'
-      '9550582231725359408128481117450284102701938521105559644622948954'
-      '9303819644288109756659334461284756482337867831652712019091456485')
-   digits_e = ( \
-      'ARMORY_KEY_DERIVATION_FUNCTION_SALT_'
-      '7182818284590452353602874713526624977572470936999595749669676277'
-      '2407663035354759457138217852516642742746639193200305992181741359'
-      '6629043572900334295260595630738132328627943490763233829880753195'
-      '2510190115738341879307021540891499348841675092447614606680822648')
-
-   paramMap['IV']    = SecureBinaryData( hash256(digits_pi)[:16] )
-   paramMap['SALT']  = SecureBinaryData( hash256(digits_e) )
-   paramMap['KDFBYTES'] = long(16*MEGABYTE)
-
-   def hardcodeCreateSecurePrintPassphrase(secret):
-      if isinstance(secret, basestring):
-         secret = SecureBinaryData(secret)
-      bin7 = HMAC512(secret.getHash256(), paramMap['SALT'].toBinStr())[:7]
-      out,bin7 = SecureBinaryData(binary_to_base58(bin7 + hash256(bin7)[0])), None
-      return out
-
-   def hardcodeCheckSecurePrintCode(securePrintCode):
-      if isinstance(securePrintCode, basestring):
-         pwd = base58_to_binary(securePrintCode)
-      else:
-         pwd = base58_to_binary(securePrintCode.toBinStr())
-
-      isgood,pwd = (hash256(pwd[:7])[0] == pwd[-1]), None
-      return isgood
-
-   def hardcodeApplyKdf(secret):
-      if isinstance(secret, basestring):
-         secret = SecureBinaryData(secret)
-      kdf = KdfRomix()
-      kdf.usePrecomputedKdfParams(paramMap['KDFBYTES'], 1, paramMap['SALT'])
-      return kdf.DeriveKey(secret)
-
-   def hardcodeMask(secret, passphrase=None, ekey=None):
-      if not ekey:
-         ekey = hardcodeApplyKdf(passphrase)
-      return CryptoAES().EncryptCBC(secret, ekey, paramMap['IV'])
-
-   def hardcodeUnmask(secret, passphrase=None, ekey=None):
-      if not ekey:
-         ekey = hardcodeApplyKdf(passphrase)
-      return CryptoAES().DecryptCBC(secret, ekey, paramMap['IV'])
-
-   paramMap['FUNC_PWD']    = hardcodeCreateSecurePrintPassphrase
-   paramMap['FUNC_KDF']    = hardcodeApplyKdf
-   paramMap['FUNC_MASK']   = hardcodeMask
-   paramMap['FUNC_UNMASK'] = hardcodeUnmask
-   paramMap['FUNC_CHKPWD'] = hardcodeCheckSecurePrintCode
-   return paramMap
-
-################################################################################
-################################################################################
-class SettingsFile(object):
-   """
-   This class could be replaced by the built-in QSettings in PyQt, except
-   that older versions of PyQt do not support the QSettings (or at least
-   I never figured it out).  Easy enough to do it here
-
-   All settings must populated with a simple datatype -- non-simple
-   datatypes should be broken down into pieces that are simple:  numbers
-   and strings, or lists/tuples of them.
-
-   Will write all the settings to file.  Each line will look like:
-         SingleValueSetting1 | 3824.8
-         SingleValueSetting2 | this is a string
-         Tuple Or List Obj 1 | 12 $ 43 $ 13 $ 33
-         Tuple Or List Obj 2 | str1 $ another str
-   """
-
-   #############################################################################
-   def __init__(self, path=None):
-      self.settingsPath = path
-      self.settingsMap = {}
-      if not path:
-         self.settingsPath = os.path.join(ARMORY_HOME_DIR, 'ArmorySettings.txt')
-
-      LOGINFO('Using settings file: %s', self.settingsPath)
-      if os.path.exists(self.settingsPath):
-         self.loadSettingsFile(path)
-
-
-
-   #############################################################################
-   def pprint(self, nIndent=0):
-      indstr = indent*nIndent
-      print indstr + 'Settings:'
-      for k,v in self.settingsMap.iteritems():
-         print indstr + indent + k.ljust(15), v
-
-
-   #############################################################################
-   def hasSetting(self, name):
-      return self.settingsMap.has_key(name)
-
-   #############################################################################
-   def set(self, name, value):
-      if isinstance(value, tuple):
-         self.settingsMap[name] = list(value)
-      else:
-         self.settingsMap[name] = value
-      self.writeSettingsFile()
-
-   #############################################################################
-   def extend(self, name, value):
-      """ Adds/converts setting to list, appends value to the end of it """
-      if not self.settingsMap.has_key(name):
-         if isinstance(value, list):
-            self.set(name, value)
-         else:
-            self.set(name, [value])
-      else:
-         origVal = self.get(name, expectList=True)
-         if isinstance(value, list):
-            origVal.extend(value)
-         else:
-            origVal.append(value)
-         self.settingsMap[name] = origVal
-      self.writeSettingsFile()
-
-   #############################################################################
-   def get(self, name, expectList=False):
-      if not self.hasSetting(name) or self.settingsMap[name]=='':
-         return ([] if expectList else '')
-      else:
-         val = self.settingsMap[name]
-         if expectList:
-            if isinstance(val, list):
-               return val
-            else:
-               return [val]
-         else:
-            return val
-
-   #############################################################################
-   def getAllSettings(self):
-      return self.settingsMap
-
-   #############################################################################
-   def getSettingOrSetDefault(self, name, defaultVal, expectList=False):
-      output = defaultVal
-      if self.hasSetting(name):
-         output = self.get(name)
-      else:
-         self.set(name, defaultVal)
-
-      return output
-
-
-
-   #############################################################################
-   def delete(self, name):
-      if self.hasSetting(name):
-         del self.settingsMap[name]
-      self.writeSettingsFile()
-
-   #############################################################################
-   def writeSettingsFile(self, path=None):
-      if not path:
-         path = self.settingsPath
-      f = open(path, 'w')
-      for key,val in self.settingsMap.iteritems():
-         try:
-            # Skip anything that throws an exception
-            valStr = ''
-            if   isinstance(val, basestring):
-               valStr = val
-            elif isinstance(val, int) or \
-                 isinstance(val, float) or \
-                 isinstance(val, long):
-               valStr = str(val)
-            elif isinstance(val, list) or \
-                 isinstance(val, tuple):
-               valStr = ' $  '.join([str(v) for v in val])
-            f.write(key.ljust(36))
-            f.write(' | ')
-            f.write(toBytes(valStr))
-            f.write('\n')
-         except:
-            LOGEXCEPT('Invalid entry in SettingsFile... skipping')
-      f.close()
-
-
-   #############################################################################
-   def loadSettingsFile(self, path=None):
-      if not path:
-         path = self.settingsPath
-
-      if not os.path.exists(path):
-         raise FileExistsError('Settings file DNE:' + path)
-
-      f = open(path, 'rb')
-      sdata = f.read()
-      f.close()
-
-      # Automatically convert settings to numeric if possible
-      def castVal(v):
-         v = v.strip()
-         a,b = v.isdigit(), v.replace('.','').isdigit()
-         if a:
-            return int(v)
-         elif b:
-            return float(v)
-         else:
-            if v.lower()=='true':
-               return True
-            elif v.lower()=='false':
-               return False
-            else:
-               return toUnicode(v)
-
-
-      sdata = [line.strip() for line in sdata.split('\n')]
-      for line in sdata:
-         if len(line.strip())==0:
-            continue
-
-         try:
-            key,vals = line.split('|')
-            valList = [castVal(v) for v in vals.split('$')]
-            if len(valList)==1:
-               self.settingsMap[key.strip()] = valList[0]
-            else:
-               self.settingsMap[key.strip()] = valList
-         except:
-            LOGEXCEPT('Invalid setting in %s (skipping...)', path)
-
-# Grab language settings from settings file or from cli
-LANGUAGES = ["da", "de", "en", "es", "el", "fr", "he", "hr", "id", "ru", "sv"]
-if CLI_OPTIONS.language == "en":
-   langSetting = SettingsFile(SETTINGS_PATH).get('Language')
-else:
-   langSetting = CLI_OPTIONS.language
-if langSetting not in LANGUAGES:
-   LOGERROR("Unsupported language %s specified. Defaulting to English (en)", langSetting)
-   langSetting = "en"
-GUI_LANGUAGE = "armory_" + langSetting + ".qm"
-LOGINFO("Using Language: %s", langSetting)
-
 # Random method for creating
 def touchFile(fname):
    try:
@@ -3747,3 +2827,49 @@ def touchFile(fname):
       os.fsync(f.fileno())
       f.close()
 
+################################################################################
+def getNameForAddrType(addrType):
+   from armoryengine.CppBridge import TheBridge
+   return TheBridge.utils.getNameForAddrType(addrType)
+
+################################################################################
+def getRandomHexits_NotSecure(count):
+   return ''.join([random.choice(BASE16CHARS_NOCAPS) for x in range(count)])
+
+#################
+# bridge setup
+#################
+
+def getBridgeArgList():
+   #gather cli args for bridge
+   bridgeArgs = []
+
+   #testnet
+   if USE_TESTNET:
+      bridgeArgs.append(["testnet", ""])
+
+   #db type
+   bridgeArgs.append(["db-type", CLI_OPTIONS.db_type])
+
+   #db ip & port
+   bridgeArgs.append(["armorydb-ip", ARMORYDB_IP])
+   bridgeArgs.append(["armorydb-port", ARMORYDB_PORT])
+
+   #datadir
+   bridgeArgs.append(["datadir", ARMORY_HOME_DIR])
+
+   #enforce --public for now
+   bridgeArgs.append(["public", ""])
+
+   #offline
+   if CLI_OPTIONS.offline:
+      bridgeArgs.append(["offline", ""])
+
+   stringArgs = ""
+   for argPair in bridgeArgs:
+      stringArgs += " --"
+      stringArgs += argPair[0]
+      if len(argPair[1]) > 0:
+         stringArgs += "="
+         stringArgs += argPair[1]
+   return stringArgs

@@ -9,12 +9,13 @@
 #
 # Licence: Public domain or CC0
 
+from __future__ import print_function
 import base64
 import hashlib
 import random
 import time
 
-import CppBlockUtils
+#import CppBlockUtils
 from armoryengine.ArmoryUtils import getVersionString, BTCARMORY_VERSION, \
    ChecksumError, ADDRBYTE
 
@@ -23,12 +24,12 @@ FTVerbose=False
 
 version='0.1.0'
 
-_p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2FL
-_r = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141L
-_b = 0x0000000000000000000000000000000000000000000000000000000000000007L
-_a = 0x0000000000000000000000000000000000000000000000000000000000000000L
-_Gx = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798L
-_Gy = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8L
+_p = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+_r = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+_b = 0x0000000000000000000000000000000000000000000000000000000000000007
+_a = 0x0000000000000000000000000000000000000000000000000000000000000000
+_Gx = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
+_Gy = 0x483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8
 
 BEGIN_MARKER = '-----BEGIN '
 END_MARKER = '-----END '
@@ -40,10 +41,11 @@ BITCOIN_SIG_TYPE_MARKER = 'BITCOIN SIGNATURE'
 BASE64_MSG_TYPE_MARKER = 'BITCOIN MESSAGE'
 BITCOIN_ARMORY_COMMENT = ''
 class UnknownSigBlockType(Exception): pass
-   
-def randomk():  
+
+def randomk():
    # Using Crypto++ CSPRNG instead of python's
-   sbdRandK = CppBlockUtils.SecureBinaryData().GenerateRandom(32)
+   #sbdRandK = CppBlockUtils.SecureBinaryData().GenerateRandom(32)
+   sbdRandK = 0
    hexRandK = sbdRandK.toBinStr().encode('hex_codec')
    return int(hexRandK, 16)
 
@@ -72,7 +74,7 @@ __b58chars = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
 __b58base = len(__b58chars)
 
 def b58encode(v):
-   long_value = 0L
+   long_value = 0
    for (i, c) in enumerate(v[::-1]):
       long_value += (256**i) * ord(c)
 
@@ -91,7 +93,7 @@ def b58encode(v):
    return (__b58chars[0]*nPad) + result
 
 def b58decode(v, length):
-   long_value = 0L
+   long_value = 0
    for (i, c) in enumerate(v[::-1]):
       long_value += __b58chars.find(c) * (__b58base**i)
 
@@ -119,7 +121,7 @@ def ASecretToSecret(key):
       return vch[1:]
    else:
       return False
-     
+
 def DecodeBase58Check(psz):
    vchRet = b58decode(psz, None)
    key = vchRet[0:-4]
@@ -131,7 +133,7 @@ def DecodeBase58Check(psz):
    else:
       return key
 
- 
+
 def regenerate_key(sec):
    b = ASecretToSecret(sec)
    if not b:
@@ -175,7 +177,7 @@ def i2d_ECPrivateKey(pkey, compressed=False):#, crypted=True):
          '022100' + \
          '%064x' % _r + \
          '020101a144034200'
-         
+
    return key.decode('hex') + i2o_ECPublicKey(pkey, compressed)
 
 def i2o_ECPublicKey(pkey, compressed=False):
@@ -260,7 +262,7 @@ class Point( object ):
    def __mul__( self, other ):
       def leftmost_bit( x ):
          assert x > 0
-         result = 1L
+         result = 1
          while result <= x: result = 2 * result
          return result / 2
 
@@ -329,11 +331,11 @@ class Public_key( object ):
       self.compressed = c
       n = generator.order()
       if not n:
-         raise RuntimeError, "Generator point must have order."
+         raise RuntimeError("Generator point must have order.")
       if not n * point == INFINITY:
-         raise RuntimeError, "Generator point order is bad."
+         raise RuntimeError("Generator point order is bad.")
       if point.x() < 0 or n <= point.x() or point.y() < 0 or n <= point.y():
-         raise RuntimeError, "Generator point has x or y out of range."
+         raise RuntimeError("Generator point has x or y out of range.")
 
    def verify( self, hashValue, signature ):
       if isinstance(hashValue, str):
@@ -394,10 +396,10 @@ class Private_key( object ):
       k = random_k % n
       p1 = k * G
       r = p1.x()
-      if r == 0: raise RuntimeError, "amazingly unlucky random number r"
+      if r == 0: raise RuntimeError("amazingly unlucky random number r")
       s = ( inverse_mod( k, n ) * \
                ( hashValue + ( self.secret_multiplier * r ) % n ) ) % n
-      if s == 0: raise RuntimeError, "amazingly unlucky random number s"
+      if s == 0: raise RuntimeError("amazingly unlucky random number s")
       return Signature( r, s )
 
 class EC_KEY(object):
@@ -544,11 +546,11 @@ def FormatText(t, sigctx=False, verbose=False):   #sigctx: False=what is display
 
    global FTVerbose
    if FTVerbose:
-      print '  -- Sent:      '+t.encode('hex')
+      print('  -- Sent:      '+t.encode('hex'))
       if sigctx:
-         print '  -- Signed:    '+r.encode('hex')
+         print('  -- Signed:    '+r.encode('hex'))
       else:
-         print '  -- Displayed: '+r.encode('hex')
+         print('  -- Displayed: '+r.encode('hex'))
 
    return r
 
@@ -666,16 +668,16 @@ if __name__=='__main__':
    FTVerbose=True
 
    sv0=ASv0(pvk1, text1)
-   print sv0
-   print verifySignature(sv0['b64-signature'], sv0['message'], signVer='v0')
-   print ASv1B64(pvk1, text1)
-   print
-   print ASv1CS(pvk1, text1)
-   print
-   print ASv1CS(pvk1, text2)
-   print
-   print ASv1CS(pvk1, text3)
-   print
-   print ASv1CS(pvk1, text4)
-   print
-   print ASv1CS(pvk1, text5)
+   print(sv0)
+   print(verifySignature(sv0['b64-signature'], sv0['message'], signVer='v0'))
+   print(ASv1B64(pvk1, text1))
+   print()
+   print(ASv1CS(pvk1, text1))
+   print()
+   print(ASv1CS(pvk1, text2))
+   print()
+   print(ASv1CS(pvk1, text3))
+   print()
+   print(ASv1CS(pvk1, text4))
+   print()
+   print(ASv1CS(pvk1, text5))

@@ -14,6 +14,7 @@
 #ifndef _H_DBUTILS
 #define _H_DBUTILS
 
+#include <string>
 #include "BinaryData.h"
 
 enum BLKDATA_TYPE
@@ -37,7 +38,17 @@ enum DB_PREFIX
    DB_PREFIX_COUNT,
    DB_PREFIX_ZCDATA,
    DB_PREFIX_POOL,
-   DB_PREFIX_MISSING_HASHES
+   DB_PREFIX_MISSING_HASHES,
+   DB_PREFIX_SUBSSH,
+   DB_PREFIX_TEMPSCRIPT
+};
+
+struct FileMap
+{
+   size_t size_;
+   uint8_t* filePtr_ = nullptr;
+
+   void unmap(void);
 };
 
 class DBUtils
@@ -123,8 +134,8 @@ public:
 
 
 
-   static string getPrefixName(uint8_t prefixInt);
-   static string getPrefixName(DB_PREFIX pref);
+   static std::string getPrefixName(uint8_t prefixInt);
+   static std::string getPrefixName(DB_PREFIX pref);
 
    static bool checkPrefixByte(BinaryRefReader & brr,
       DB_PREFIX prefix,
@@ -136,6 +147,21 @@ public:
    static BinaryData getFilterPoolKey(uint32_t filenum);
    static BinaryData getMissingHashesKey(uint32_t id);
 
-   static bool fileExists(const string& path, int mode);
+   static bool fileExists(const std::string& path, int mode);
+
+   static FileMap getMmapOfFile(const std::string&, bool write = false);
+   
+   static int removeDirectory(const std::string&);
+   static struct stat getPathStat(const std::string& path);
+   static struct stat getPathStat(const char* path, unsigned len);
+   static size_t getFileSize(const std::string& path);
+   static bool isFile(const std::string& path);
+   static bool isDir(const std::string& path);
+
+   static void appendPath(std::string& base, const std::string& add);
+   static void expandPath(std::string& path);
+   static std::string getBaseDir(const std::string& path);
+
+   static BinaryDataRef getDataRefForPacket(const BinaryDataRef& packet);
 };
 #endif

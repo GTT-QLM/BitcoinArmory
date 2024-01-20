@@ -1,3 +1,5 @@
+from __future__ import (absolute_import, division,
+                        print_function, unicode_literals)
 ################################################################################
 #                                                                              #
 # Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
@@ -6,7 +8,7 @@
 #                                                                              #
 ################################################################################
 
-from ArmoryUtils import makeAsciiBlock, readAsciiBlock
+from armoryengine.ArmoryUtils import makeAsciiBlock, readAsciiBlock
 from armoryengine.ArmoryUtils import LOGERROR, UnserializeError
 
 class AsciiSerializable(object):

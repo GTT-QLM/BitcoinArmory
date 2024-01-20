@@ -1,17 +1,33 @@
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//  Copyright (C) 2016-19, goatpig.                                           //
+//  Distributed under the MIT license                                         //
+//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //                                      
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
 #include <string>
 #include <iostream>
 #include <sstream>
+#include <btc/ecc.h>
 
-
-using namespace std;
-
-#include "BlockDataManagerConfig.h"
+#include "ArmoryConfig.h"
 #include "BDM_mainthread.h"
 #include "BDM_Server.h"
+#include "TerminalPassphrasePrompt.h"
+
+using namespace std;
+using namespace Armory::Config;
+
+#define LOG_FILE_NAME "dbLog"
 
 int main(int argc, char* argv[])
 {
-   ScrAddrFilter::init();
+   CryptoECDSA::setupContext();
+   startupBIP151CTX();
+   startupBIP150CTX(4);
+
+   GOOGLE_PROTOBUF_VERIFY_VERSION;
 
 #ifdef _WIN32
    WSADATA wsaData;
@@ -19,45 +35,63 @@ int main(int argc, char* argv[])
    WSAStartup(wVersion, &wsaData);
 #endif
 
-   BlockDataManagerConfig bdmConfig;
-   bdmConfig.parseArgs(argc, argv);
-   
-   cout << "logging in " << bdmConfig.logFilePath_ << endl;
-   STARTLOGGING(bdmConfig.logFilePath_, LogLvlDebug);
-   if (!bdmConfig.useCookie_)
+   try
+   {
+      Armory::Config::parseArgs(argc, argv, Armory::Config::ProcessType::DB);
+   }
+   catch (const DbErrorMsg& e)
+   {
+      cout << "Failed to setup with error:" << endl;
+      cout << "   " << e.what() << endl;
+      cout << "Aborting!" << endl;
+
+      return -1;
+   }
+
+   cout << "logging in " << Pathing::logFilePath(LOG_FILE_NAME) << endl;
+   STARTLOGGING(Pathing::logFilePath(LOG_FILE_NAME), LogLvlDebug);
+   if (!NetworkSettings::useCookie())
       LOGENABLESTDOUT();
    else
       LOGDISABLESTDOUT();
 
-   LOGINFO << "Running on " << bdmConfig.threadCount_ << " threads";
-   LOGINFO << "Ram usage level: " << bdmConfig.ramUsage_;
+   LOGINFO << "Running on " << DBSettings::threadCount() << " threads";
+   LOGINFO << "Ram usage level: " << DBSettings::ramUsage();
 
-   if (FCGX_Init())
-      throw runtime_error("failed to initialize FCGI engine");
+   //init state
+   DBSettings::setServiceType(SERVICE_WEBSOCKET);
+   BlockDataManagerThread bdmThread;
 
-
-   //init db
-   BlockDataManagerThread bdmThread(bdmConfig);
-   bdmThread.start(bdmConfig.initMode_);
-
-   //init listen loop
-   FCGI_Server server(&bdmThread, bdmConfig.fcgiPort_, bdmConfig.listen_all_);
-   
-   if (!bdmConfig.checkChain_)
+   if (!DBSettings::checkChain())
    {
-      //start listening
-      server.checkSocket();
-      server.init();
+      //check we can listen on this ip:port
+      if (SimpleSocket::checkSocket("127.0.0.1", NetworkSettings::listenPort()))
+      {
+         LOGERR << "There is already a process listening on port " << 
+            NetworkSettings::listenPort();
+         LOGERR << "ArmoryDB cannot start under these conditions. Shutting down!";
+         LOGERR << "Make sure to shutdown the conflicting process" <<
+            "before trying again (most likely another ArmoryDB instance)";
+
+         exit(1);
+      }
    }
 
-
-   //create cookie file if applicable
-   bdmConfig.createCookie();
-   
-   if (!bdmConfig.checkChain_)
    {
-      //process incoming connections
-      server.enterLoop();
+      //setup remote peers db, this will block the init process until 
+      //peers db is unlocked
+      LOGINFO << "datadir: " << Armory::Config::getDataDir();
+      auto&& passLbd = TerminalPassphrasePrompt::getLambda("peers db");
+      WebSocketServer::initAuthPeers(passLbd);
+   }
+
+   //start up blockchain service
+   bdmThread.start(DBSettings::initMode());
+
+   if (!DBSettings::checkChain())
+   {
+      //start websocket server
+      WebSocketServer::start(&bdmThread, false);
    }
    else
    {
@@ -65,7 +99,11 @@ int main(int argc, char* argv[])
    }
 
    //stop all threads and clean up
-   server.shutdown();
+   WebSocketServer::shutdown();
+   google::protobuf::ShutdownProtobufLibrary();
+
+   shutdownBIP151CTX();
+   CryptoECDSA::shutdown();
 
    return 0;
 }

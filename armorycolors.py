@@ -1,3 +1,5 @@
+from __future__ import (absolute_import, division,
+                        print_function, unicode_literals)
 ################################################################################
 #                                                                              #
 # Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
@@ -6,7 +8,8 @@
 #                                                                              #
 ################################################################################
 import sys
-from PyQt4.QtGui  import QColor, QPalette, QApplication
+from PySide2.QtGui  import QColor, QPalette
+from PySide2.QtWidgets import QApplication
 
 
 """
@@ -42,12 +45,12 @@ class InvalidColor(Exception): pass
 def tweakColor(qcolor, op, tweaks):
    """
    We want to be able to take existing colors (from the palette)
-   and tweak them.  This may involved "inverting" them, or 
+   and tweak them.  This may involved "inverting" them, or
    multiplying or adding scalars to the various channels.
    """
    if len(tweaks) != 3:
-      raise InvalidColor, 'Must supply list or tuple of RGB tweaks'
-   
+      raise InvalidColor('Must supply list or tuple of RGB tweaks')
+
    # Determine what the "tweaks" list/tuple means
    tweakChannel = lambda x,mod: x  # identity
    if op.lower() in ('times', '*'):
@@ -64,7 +67,7 @@ def tweakColor(qcolor, op, tweaks):
          returnColor = min(returnColor, 255)
          return int(max(returnColor, 0))
    else:
-      raise InvalidColor, 'Invalid color operation: "%s"' % op
+      raise InvalidColor('Invalid color operation: "%s"' % op)
 
    r,g,b = qcolor.red(), qcolor.green(), qcolor.blue()
    r = tweakChannel(r, tweaks[0])
@@ -80,7 +83,7 @@ def luminance(qcolor):
    """ Gives the pseudo-equivalent greyscale value of this color """
    r,g,b = qcolor.red(), qcolor.green(), qcolor.blue()
    return int(0.2*r + 0.6*g + 0.2*b)
-   
+
 
 QAPP = QApplication(sys.argv)
 qpal = QAPP.palette()
@@ -148,38 +151,35 @@ Colors.TextPurple.setRgb(102, 0, 204, 255)
 
 ################################################################################
 def htmlColor(name):
-   """ 
+   """
    These are not official HTML colors:  this is simply a method
    for taking one of the above colors and converting to a hex string
    """
    try:
       qcolor = Colors.__dict__[name]
       r,g,b = qcolor.red(), qcolor.green(), qcolor.blue()
-      rstr = hex(r)[2:].rjust(2, '0')
-      gstr = hex(g)[2:].rjust(2, '0')
-      bstr = hex(b)[2:].rjust(2, '0')
+      rstr = hex(r)[2:].encode('ascii').rjust(2, b'0').decode('ascii')
+      gstr = hex(g)[2:].encode('ascii').rjust(2, b'0').decode('ascii')
+      bstr = hex(b)[2:].encode('ascii').rjust(2, b'0').decode('ascii')
       return '#%s%s%s' % (rstr, gstr, bstr)
    except:
-      raise InvalidColor, 'Invalid color: ' + name
+      raise InvalidColor('Invalid color: ' + name)
 
 
 
 if __name__== "__main__":
 
-   print Colors.TextWarn
-   print htmlColor("TextRed")
-   print htmlColor("TextWarn")
+   print(Colors.TextWarn)
+   print(htmlColor("TextRed"))
+   print(htmlColor("TextWarn"))
 
-   print "Colors in the palette!"
+   print("Colors in the palette!")
    for name,qc in Colors.__dict__.iteritems():
       if not isinstance(qc, QColor):
          continue
-      print '\t',
-      print ('"'+name+'"').ljust(20), 
-      print str(qc.red()).rjust(3),
-      print str(qc.green()).rjust(3),
-      print str(qc.blue()).rjust(3),
-      print '\t(%s)' % htmlColor(name)
-
-
-
+      print('\t', end=' ')
+      print(('"'+name+'"').ljust(20), end=' ')
+      print(str(qc.red()).rjust(3), end=' ')
+      print(str(qc.green()).rjust(3), end=' ')
+      print(str(qc.blue()).rjust(3), end=' ')
+      print('\t(%s)' % htmlColor(name))

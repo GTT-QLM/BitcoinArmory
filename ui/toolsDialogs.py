@@ -1,3 +1,5 @@
+from __future__ import (absolute_import, division,
+                        print_function, unicode_literals)
 ################################################################################
 #                                                                              #
 # Copyright (C) 2011-2015, Armory Technologies, Inc.                           #
@@ -5,16 +7,21 @@
 # See LICENSE or http://www.gnu.org/licenses/agpl.html                         #
 #                                                                              #
 ################################################################################
-from PyQt4 import Qt, QtCore
-from PyQt4.QtCore import *
-from PyQt4.QtGui import *
 
-from armorycolors import htmlColor
-from jasvet import ASv0, ASv1B64, ASv1CS, verifySignature, readSigBlock
-from qtdefines import *
-from qtdialogs import MIN_PASSWD_WIDTH, DlgPasswd3, createAddrBookButton,\
-   DlgUnlockWallet
-from armoryengine.ArmoryUtils import isASCII
+from PySide2.QtWidgets import QApplication, QDialogButtonBox, QGridLayout, \
+        QLabel, QLineEdit, QMessageBox, QPushButton, QTabWidget, QTextEdit, \
+        QVBoxLayout, QWidget
+from PySide2.QtGui import QIcon
+from PySide2.QtCore import SIGNAL
+
+from armoryengine.ArmoryUtils import ADDRBYTE, LOGWARN, P2SHBYTE, isASCII
+from armoryengine.AddressUtils import addrStr_to_hash160
+from jasvet import ASv0, ASv1B64, ASv1CS, readSigBlock, verifySignature
+from qtdialogs.ArmoryDialog import ArmoryDialog
+from qtdialogs.DlgUnlockWallet import DlgUnlockWallet
+from qtdialogs.qtdefines import MSGBOX, QRichLabel, makeHorizFrame
+from qtdialogs.MsgBoxCustom import MsgBoxCustom
+from qtdialogs.DlgAddressBook import createAddrBookButton
 
 class MessageSigningVerificationDialog(ArmoryDialog):
 
@@ -40,15 +47,12 @@ class MessageSigningVerificationDialog(ArmoryDialog):
       layout.addWidget(actionButtonBox)
 
       self.setLayout(layout)
-      self.connect(self.goBackButton, SIGNAL('clicked()'), \
-                   self,           SLOT('reject()'))
-      
+      self.goBackButton.clicked.connect(self.reject)
+
    def clearFields(self):
       self.addressLineEdit.setText('')
       self.messageTextEdit.setPlainText('')
       self.signatureDisplay.setPlainText('')
-      
-      
 
 
 class MessageSigningWidget(QWidget):
@@ -58,7 +62,7 @@ class MessageSigningWidget(QWidget):
       self.main = main
       signMessageLayout = QGridLayout()
       self.setMinimumWidth(800)
-      
+
       # Pick an Address in Row 0 of the grid layout
       addressLabel = QLabel(self.tr('Sign with Address:'))
       self.addressLineEdit = QLineEdit()
@@ -75,10 +79,8 @@ class MessageSigningWidget(QWidget):
       self.messageTextEdit.setStyleSheet("font: 9pt \"Courier\";")
       signMessageLayout.addWidget(messageLabel,          1, 0)
       signMessageLayout.addWidget(self.messageTextEdit,  1, 1, 1, 2)
-      
-      
+
       # Create a row with just a sign message button
-      
       self.bareSigButton = QPushButton(self.tr('Bare Signature (Bitcoin Core Compatible)'))
       self.base64SigButton = QPushButton(self.tr('Base64 Signature'))
       self.clearSigButton = QPushButton(self.tr('Clearsign Signature'))
@@ -87,7 +89,7 @@ class MessageSigningWidget(QWidget):
                                         self.clearSigButton,\
                                         'Stretch'])
       signMessageLayout.addWidget(sigButtonFrame,  2, 1, 1, 3)
-      
+
       # Create a Signature display
       signatureLabel = QLabel(self.tr('Message Signature:'))
       self.signatureDisplay = QTextEdit()
@@ -98,22 +100,16 @@ class MessageSigningWidget(QWidget):
 
       self.copySignatureButton = QPushButton(self.tr("Copy Signature"))
       self.clearFieldsButton = QPushButton(self.tr("Clear All"))
-      
       buttonFrame = makeHorizFrame([self.copySignatureButton, self.clearFieldsButton,'Stretch'])
       signMessageLayout.addWidget(buttonFrame, 4, 1, 1, 3)
 
       self.setLayout(signMessageLayout)
-      self.connect(self.bareSigButton, SIGNAL('clicked()'), \
-                   self.bareSignMessage)
-      self.connect(self.base64SigButton, SIGNAL('clicked()'), \
-                    self.base64SignMessage)
-      self.connect(self.clearSigButton, SIGNAL('clicked()'), \
-                    self.clearSignMessage)
-      self.connect(self.copySignatureButton, SIGNAL('clicked()'), \
-                   self.copySignature)
-      self.connect(self.clearFieldsButton, SIGNAL('clicked()'), \
-                   self.clearFields)
-      
+      self.bareSigButton.clicked.connect(self.bareSignMessage)
+      self.base64SigButton.clicked.connect(self.base64SignMessage)
+      self.clearSigButton.clicked.connect(self.clearSignMessage)
+      self.copySignatureButton.clicked.connect(self.copySignature)
+      self.clearFieldsButton.clicked.connect(self.clearFields)
+
    def getPrivateKeyFromAddrInput(self):
       atype, addr160 = addrStr_to_hash160(str(self.addressLineEdit.text()))
       if atype==P2SHBYTE:
@@ -123,7 +119,7 @@ class MessageSigningWidget(QWidget):
                QMessageBox.Ok)
          return
 
-      walletId = self.main.getWalletForAddr160(addr160)
+      walletId = self.main.getWalletForAddrHash(addr160)
       wallet = self.main.walletMap[walletId]
       if wallet.useEncryption and wallet.isLocked:
          # Target wallet is encrypted...
@@ -228,11 +224,11 @@ class SignatureVerificationWidget(QWidget):
       'The owner of the following Bitcoin address...'
       '<br>'
       '<blockquote>'
-      '<font face="Courier" size=4 color="#000060"><b>%1</b></font>'
+      '<font face="Courier" size=4 color="#000060"><b>%s</b></font>'
       '</blockquote>'
       '<br>'
       '... has produced a <b><u>valid</u></b> signature for '
-      'the following message:<br>').arg(addrB58))
+      'the following message:<br>' % addrB58))
          
       if addrB58:
          msg = messageString.replace('\r\n','\n')
@@ -241,16 +237,16 @@ class SignatureVerificationWidget(QWidget):
          # in the Message Signing/Verification dialog
          msg =  '<br>'.join([line[:60]+ '...'*(len(line)>60) for line in msg.split('<br>')][:12])
          MsgBoxCustom(MSGBOX.Good, self.tr('Verified!'), str(self.tr(
-            '%1`'
+            '%s`'
             '<hr>'
             '<blockquote>'
-            '<font face="Courier" color="#000060"><b>%2</b></font>'
+            '<font face="Courier" color="#000060"><b>%s</b></font>'
             '</blockquote>'
             '<hr><br>'
-            '<b>Please</b> make sure that the address above (%3...) matches the '
+            '<b>Please</b> make sure that the address above (%s...) matches the '
             'exact address you were expecting.  A valid signature is meaningless '
             'unless it is made '
-            'from a recognized address!').arg(ownerStr, msg, addrB58[:10])))
+            'from a recognized address!' % (ownerStr, msg, addrB58[:10]))))
          self.lblSigResult.setText(\
             '<font color="green">Valid Signature by %s</font>' % addrB58)
       else:
@@ -301,7 +297,6 @@ class BareSignatureVerificationWidget(SignatureVerificationWidget):
          self.displayInvalidSignatureMessage()
          raise
 
-         
    def clearFields(self):
       super(BareSignatureVerificationWidget, self).clearFields()
       self.addressLineEdit.setText('')
@@ -344,6 +339,3 @@ class SignedMessageBlockVerificationWidget(SignatureVerificationWidget):
       super(SignedMessageBlockVerificationWidget, self).clearFields()
       self.signedMessageBlockTextEdit.setPlainText('')
       self.messageTextEdit.setPlainText('')
-
-
-

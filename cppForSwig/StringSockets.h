@@ -11,65 +11,75 @@
 
 #include <string.h>
 #include "SocketObject.h"
-#include "FcgiMessage.h"
+#include "HttpMessage.h"
+
+typedef std::vector<uint8_t>::iterator vecIter;
 
 ///////////////////////////////////////////////////////////////////////////////
 struct HttpError : public SocketError
 {
 public:
-   HttpError(const string& e) : SocketError(e)
+   HttpError(const std::string& e) : SocketError(e)
    {}
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-struct FcgiError : public SocketError
+class HttpSocket : public SimpleSocket
 {
-public:
-   FcgiError(const string& e) : SocketError(e)
-   {}
-};
-
-///////////////////////////////////////////////////////////////////////////////
-class HttpSocket : public BinarySocket
-{
-   friend class FcgiSocket;
-
-   vector<string> headers_;
-
 private:
-   struct packetData
+   struct PacketData
    {
-      vector<uint8_t> httpData;
-      int content_length = -1;
-      size_t header_len = 0;
+      std::vector<uint8_t> httpData_;
+      int content_length_ = -1;
+      size_t header_len_ = SIZE_MAX;
 
       void clear(void)
       {
-         httpData.clear();
-         content_length = -1;
-         header_len = 0;
+         if (content_length_ == -1 || header_len_ == SIZE_MAX)
+         {
+            httpData_.clear();
+         }
+         else
+         {
+            if (content_length_ + header_len_ > httpData_.size())
+            {
+               std::vector<uint8_t> leftOverData;
+               leftOverData.insert(leftOverData.end(),
+                  std::move_iterator<vecIter>(httpData_.begin() +
+                     header_len_ + content_length_),
+                  std::move_iterator<vecIter>(httpData_.end()));
+               httpData_ = move(leftOverData);
+            }
+            else
+            {
+               httpData_.clear();
+            }
+         }
+
+         content_length_ = -1;
+         header_len_ = SIZE_MAX;
       }
 
-      void get_content_len(const string& header_str)
+      void get_content_len(const std::string& header_str)
       {
-         string err504("HTTP/1.1 504");
+         std::string err504("HTTP/1.1 504");
          if (header_str.compare(0, err504.size(), err504) == 0)
             throw HttpError("connection timed out");
 
-         string search_tok_caps("Content-Length: ");
+         std::string search_tok_caps("Content-Length: ");
          auto tokpos = header_str.find(search_tok_caps);
-         if (tokpos != string::npos)
+         if (tokpos != std::string::npos)
          {
-            content_length = atoi(header_str.c_str() +
+            content_length_ = atoi(header_str.c_str() +
                tokpos + search_tok_caps.size());
             return;
          }
 
-         string search_tok("content-length: ");
+         std::string search_tok("content-length: ");
          tokpos = header_str.find(search_tok);
-         if (tokpos != string::npos)
+         if (tokpos != std::string::npos)
          {
-            content_length = atoi(header_str.c_str() +
+            content_length_ = atoi(header_str.c_str() +
                tokpos + search_tok.size());
             return;
          }
@@ -77,49 +87,44 @@ private:
    };
 
 private:
-   int32_t makePacket(char** packet, const char* msg);
-   string getBody(vector<uint8_t>);
-   void setupHeaders(void);
+   PacketData currentRead_;
+   std::unique_ptr<HttpMessage> messageWithPrecacheHeaders_;
+   Armory::Threading::Queue<std::shared_ptr<Socket_ReadPayload>> readStack_;
+
+protected:
+   void addReadPayload(std::shared_ptr<Socket_ReadPayload>);
+   std::string getHttpPayload(const char*, size_t);
 
 public:
-   HttpSocket(const BinarySocket&);
+   HttpSocket(const std::string& addr, const std::string& port);
 
-   void resetHeaders(void);
-   void addHeader(string);
-
-   virtual string writeAndRead(const string&, SOCKET sockfd = SOCK_MAX);
+   static size_t getHttpBodyOffset(const char*, size_t);
    virtual SocketType type(void) const { return SocketHttp; }
+   virtual bool processPacket(std::vector<uint8_t>&, std::vector<uint8_t>&);
+
+   virtual void pushPayload(
+      std::unique_ptr<Socket_WritePayload>,
+      std::shared_ptr<Socket_ReadPayload>);
+   virtual void respond(std::vector<uint8_t>&);
+
+   void precacheHttpHeader(std::string& header)
+   {
+      messageWithPrecacheHeaders_->addHeader(std::move(header));
+   }
 };
 
 ///////////////////////////////////////////////////////////////////////////////
-class FcgiSocket : public HttpSocket
+struct CallbackReturn_HttpBody : public CallbackReturn
 {
 private:
-   void addStringParam(const string& name, const string& val);
-
-   struct packetStruct
-   {
-      vector<uint8_t> fcgidata;
-      vector<uint8_t> httpData;
-
-      int endpacket = 0;
-      size_t ptroffset = 0;
-      uint16_t fcgiid = 0;
-
-      void clear(void)
-      {
-         fcgidata.clear();
-         httpData.clear();
-
-         endpacket = 0;
-         ptroffset = 0;
-      }
-   };
+   std::function<void(std::string)> userCallbackLambda_;
 
 public:
-   FcgiSocket(const HttpSocket&);
-   string writeAndRead(const string&, SOCKET sfd = SOCK_MAX);
-   SocketType type(void) const { return SocketFcgi; }
-};
+   CallbackReturn_HttpBody(std::function<void(std::string)> lbd) :
+      userCallbackLambda_(lbd)
+   {}
 
+   //virtual
+   void callback(BinaryDataRef);
+};
 #endif

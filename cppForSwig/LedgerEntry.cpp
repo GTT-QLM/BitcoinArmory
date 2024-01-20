@@ -4,8 +4,15 @@
 //  Distributed under the GNU Affero General Public License (AGPL v3)         //
 //  See LICENSE-ATI or http://www.gnu.org/licenses/agpl.html                  //
 //                                                                            //
+//                                                                            //
+//  Copyright (C) 2016-2021, goatpig                                          //
+//  Distributed under the MIT license                                         //
+//  See LICENSE-MIT or https://opensource.org/licenses/MIT                    //
+//                                                                            //
 ////////////////////////////////////////////////////////////////////////////////
 #include "LedgerEntry.h"
+
+using namespace std;
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -18,34 +25,17 @@
 LedgerEntry LedgerEntry::EmptyLedger_;
 map<BinaryData, LedgerEntry> LedgerEntry::EmptyLedgerMap_;
 BinaryData LedgerEntry::EmptyID_ = BinaryData(0);
-BinaryData LedgerEntry::ZCheader_ = WRITE_UINT16_BE(0xFFFF);
-
-////////////////////////////////////////////////////////////////////////////////
-BinaryData const & LedgerEntry::getScrAddr(void) const
-{ 
-   if (ID_.getSize() == 21) return ID_;
-   return EmptyID_;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 string LedgerEntry::getWalletID(void) const
 {
-   if (ID_.getSize() != 21) return ID_.toBinStr();
-   return string();
+   return ID_;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-void LedgerEntry::setScrAddr(BinaryData const & bd)
-{ 
-   if(bd.getSize() == 21) 
-      ID_ = bd; 
-}
-
-////////////////////////////////////////////////////////////////////////////////
-void LedgerEntry::setWalletID(BinaryData const & bd)
+void LedgerEntry::setWalletID(const string& str)
 {
-   if (bd.getSize() != 21)
-      ID_ = bd;
+   ID_ = str;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -73,7 +63,7 @@ bool LedgerEntry::operator==(LedgerEntry const & le2) const
 void LedgerEntry::pprint(void)
 {
    cout << "LedgerEntry: " << endl;
-   cout << "   ScrAddr : " << getScrAddr().copySwapEndian().toHexStr() << endl;
+   cout << "   ID      : " << getWalletID() << endl;
    cout << "   Value   : " << getValue()/1e8 << endl;
    cout << "   BlkNum  : " << getBlockNum() << endl;
    cout << "   TxHash  : " << getTxHash().copySwapEndian().toHexStr() << endl;
@@ -82,6 +72,8 @@ void LedgerEntry::pprint(void)
    cout << "   sentSelf: " << (isSentToSelf() ? 1 : 0) << endl;
    cout << "   isChange: " << (isChangeBack() ? 1 : 0) << endl;
    cout << "   isOptInRBF: " << (isOptInRBF() ? 1 : 0) << endl;
+   for (auto& addr : scrAddrSet_)
+      cout << "   scrAddr: " << addr.toHexStr() << endl;
    cout << endl;
 }
 
@@ -152,19 +144,16 @@ void LedgerEntry::purgeLedgerVectorFromHeight(
 }
 
 //////////////////////////////////////////////////////////////////////////////
-void LedgerEntry::computeLedgerMap(map<BinaryData, LedgerEntry> &leMap,
+map<BinaryData, LedgerEntry> LedgerEntry::computeLedgerMap(
    const map<BinaryData, TxIOPair>& txioMap,
-   uint32_t startBlock, uint32_t endBlock,
-   const BinaryData& ID,
-   const LMDBBlockDatabase* db,
-   const Blockchain* bc,
-   bool purge)
+   uint32_t startBlock, uint32_t endBlock, const string& ID,
+   const LMDBBlockDatabase* db, const Blockchain* bc, 
+   const ZeroConfContainer* zc)
 {
-   if (purge)
-      LedgerEntry::purgeLedgerMapFromHeight(leMap, startBlock);
+   map<BinaryData, LedgerEntry> leMap;
 
    //arrange txios by transaction
-   map<BinaryData, vector<const TxIOPair*> > TxnTxIOMap;
+   map<BinaryData, deque<const TxIOPair*>> TxnTxIOMap;
 
    for (const auto& txio : txioMap)
    {
@@ -202,24 +191,22 @@ void LedgerEntry::computeLedgerMap(map<BinaryData, LedgerEntry> &leMap,
       auto txioIter = txioVec.second.cbegin();
 
       //get txhash, block, txIndex and txtime
-      if (!txioVec.first.startsWith(ZCheader_))
+      if (!txioVec.first.startsWith(DBUtils::ZeroConfHeader_))
       {
          blockNum = DBUtils::hgtxToHeight(txioVec.first.getSliceRef(0, 4));
          txIndex = READ_UINT16_BE(txioVec.first.getSliceRef(4, 2));
-         txTime = bc->getHeaderByHeight(blockNum)->getTimestamp();
+         txTime = bc->getHeaderByHeight(blockNum, 0xFF)->getTimestamp();
 
          txHash = db->getTxHashForLdbKey(txioVec.first);
       }
       else
       {
          blockNum = UINT32_MAX;
-         txIndex = READ_UINT16_BE(txioVec.first.getSliceRef(4, 2));
+         txIndex = READ_UINT32_BE(txioVec.first.getSliceRef(2, 4));
          txTime = (*txioIter)->getTxTime();
 
-         if ((*txioIter)->getDBKeyOfOutput().startsWith(txioVec.first))
-            txHash = (*txioIter)->getTxHashOfOutput(db);
-         else if ((*txioIter)->getDBKeyOfInput().startsWith(txioVec.first))
-            txHash = (*txioIter)->getTxHashOfInput(db);
+         auto ss = zc->getSnapshot();
+         txHash = ss->getHashForKey(txioVec.first);
       }
 
       if (blockNum < startBlock || blockNum > endBlock)
@@ -232,37 +219,38 @@ void LedgerEntry::computeLedgerMap(map<BinaryData, LedgerEntry> &leMap,
      
       while (txioIter != txioVec.second.cend())
       {
-
+         const auto& txio = *(*txioIter);
          if (blockNum == UINT32_MAX)
          {
-            if ((*txioIter)->isRBF())
+            if (txio.isRBF())
                isRBF = true;
             
-            if ((*txioIter)->getTxTime() > txTime)
-               txTime = (*txioIter)->getTxTime();
+            if (txio.getTxTime() > txTime)
+               txTime = txio.getTxTime();
          }
 
-         if ((*txioIter)->getDBKeyOfOutput().startsWith(txioVec.first))
+         if (txio.getDBKeyOfOutput().startsWith(txioVec.first))
          {
-            isCoinbase |= (*txioIter)->isFromCoinbase();
-            valIn += (*txioIter)->getValue();
-            value += (*txioIter)->getValue();
+            isCoinbase |= txio.isFromCoinbase();
+            valIn += txio.getValue();
+            value += txio.getValue();
 
             nTxOutAreOurs++;
          }
 
-         if ((*txioIter)->getDBKeyOfInput().startsWith(txioVec.first))
+         if (txio.hasTxIn() &&
+            txio.getDBKeyOfInput().startsWith(txioVec.first))
          {
-            valOut -= (*txioIter)->getValue();
-            value -= (*txioIter)->getValue();
+            valOut -= txio.getValue();
+            value -= txio.getValue();
 
             nTxInAreOurs++;
 
-            if ((*txioIter)->isChainedZC())
+            if (txio.isChainedZC())
                isChained = true;
          }
 
-         scrAddrSet.insert((*txioIter)->getScrAddr());
+         scrAddrSet.insert(txio.getScrAddr());
          ++txioIter;
       }
 
@@ -274,7 +262,19 @@ void LedgerEntry::computeLedgerMap(map<BinaryData, LedgerEntry> &leMap,
          //if some of the txins AND some of the txouts are ours, this could be an STS
          //pull the txn and compare the txin and txout counts
 
-         uint32_t nTxOutInTx = db->getStxoCountForTx(txioVec.first.getSliceRef(0, 6));
+         uint32_t nTxOutInTx = UINT32_MAX;
+         if (!txioVec.first.startsWith(DBUtils::ZeroConfHeader_))
+         {
+            nTxOutInTx = db->getStxoCountForTx(txioVec.first.getSliceRef(0, 6));
+         }
+         else
+         {
+            auto ss = zc->getSnapshot();
+            auto ptx = ss->getTxByKey(txioVec.first);
+            if(ptx != nullptr)
+               nTxOutInTx = ptx->outputs_.size();
+         }
+
          if (nTxOutInTx == nTxOutAreOurs)
          {
             value = valIn;
@@ -325,18 +325,16 @@ void LedgerEntry::computeLedgerMap(map<BinaryData, LedgerEntry> &leMap,
          }
          catch (exception&)
          {
-            LMDBEnv::Transaction zctx;
-            db->beginDBTransaction(&zctx, ZERO_CONF, LMDB::ReadOnly);
-
-            StoredTx stx;
-            if (!db->getStoredZcTx(stx, txioVec.first))
+            auto ss = zc->getSnapshot();
+            auto ptx = ss->getTxByKey(txioVec.first);
+            if (ptx == nullptr)
             {
                LOGWARN << "failed to get tx for ledger parsing";
             }
             else
             {
-               for (auto& txout : stx.stxoMap_)
-                  scrAddrSet.insert(txout.second.getScrAddress());
+               for (auto& txout : ptx->outputs_)
+                  scrAddrSet.insert(txout.scrAddr_);
             }
          }
       }
@@ -344,6 +342,36 @@ void LedgerEntry::computeLedgerMap(map<BinaryData, LedgerEntry> &leMap,
       le.scrAddrSet_ = move(scrAddrSet);
       leMap[txioVec.first] = le;
    }
+
+   return leMap;
 }
 
-// kate: indent-width 3; replace-tabs on;
+////////////////////////////////////////////////////////////////////////////////
+void LedgerEntry::fillMessage(::Codec_LedgerEntry::LedgerEntry* msg) const
+{
+   if (msg == nullptr)
+   {
+      LOGERR << "empty ledger msg";
+      return;
+   }
+
+   if (ID_.size() > 0)
+      msg->set_id(ID_); 
+
+   msg->set_balance(value_);
+   msg->set_txheight(blockNum_);
+
+   msg->set_txhash(txHash_.getPtr(), txHash_.getSize());
+   msg->set_index(index_);
+   msg->set_txtime(txTime_);
+
+   msg->set_iscoinbase(isCoinbase_);
+   msg->set_issts(isSentToSelf_);
+   msg->set_ischangeback(isChangeBack_);
+   msg->set_optinrbf(isOptInRBF_);
+   msg->set_ischainedzc(isChainedZC_);
+   msg->set_iswitness(usesWitness_);
+
+   for (auto& scrAddr : scrAddrSet_)
+      msg->add_scraddr(scrAddr.getPtr(), scrAddr.getSize());
+}

@@ -6,7 +6,6 @@ from PyQt4.Qt import QPushButton, SIGNAL, QTextEdit, QScrollArea, QTabWidget, \
    QDialogButtonBox, QGridLayout, QLabel, QComboBox, QMenu, QCursor, QListWidget,\
    QListWidgetItem, QMessageBox, QString
 
-from CppBlockUtils import SecureBinaryData
 from armoryengine.ArmoryUtils import RightNow, script_to_addrStr, \
    addrStr_to_hash160, enum, isASCII, PyBackgroundThread
 from armoryengine.PyBtcWallet import PyBtcWallet
@@ -16,6 +15,7 @@ from qtdefines import QRichLabel, makeHorizFrame, GETFONT, relaxedSizeNChar, \
 from armorycolors import Colors
 from armorymodels import WLTVIEWCOLS
 from PyQt4 import QtGui
+from functools import reduce
 
 
 # Give an upper limit for any method to return
